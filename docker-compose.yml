@@ -1,0 +1,186 @@
+# ==============================================================================
+# LangGraph Workspace Agent - Production Stack
+# ==============================================================================
+# This stack defines the core orchestration engine, local telemetry (Langfuse),
+# persistent memory (Redis/Chroma/Postgres), and secure ingress (Cloudflare).
+# ==============================================================================
+
+name: langgraph-workspace-agent
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: workspace_agent_gateway
+    # Sets the container execution user context (useful for Linux Docker socket permissions)
+    user: ${GATEWAY_USER:-root}
+    env_file:
+      - .env
+    environment:
+      # Override the allowed paths to restrict the agent's filesystem access
+      - ALLOWED_PATHS=${HOST_WORKSPACE_DIR}
+      # Explicitly set the host's Ollama URL since we are inside a container network
+      - OLLAMA_API_BASE=${OLLAMA_API_BASE:-http://host.docker.internal:11434}
+      # Target the 'redis' service for persistent LangGraph state checkpointing
+      - REDIS_URL=redis://redis:6379/0
+      # Internal network address targeting the 'langfuse' Compose service
+      - LANGFUSE_HOST=http://langfuse:3000
+    volumes:
+      # Pass the Docker socket so the Python SDK can spawn ephemeral sibling sandboxes
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Symmetrical mount required for Docker-out-of-Docker sandbox spawning
+      - ${HOST_WORKSPACE_DIR}:${HOST_WORKSPACE_DIR}
+      # Persist the local vector memory across container rebuilds
+      - ./.chroma:/app/.chroma
+      # Inject the dynamic routing and workspace configuration file
+      - ./config.yaml:/app/config.yaml
+    ports:
+      # Webhook reverse-proxy will route incoming traffic here
+      - "127.0.0.1:8000:8000"
+    extra_hosts:
+      # Enables reaching the host machine (e.g., local Ollama) from inside the container
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: workspace_agent_redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15
+    container_name: workspace_agent_postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: workspace_agent_clickhouse
+    environment:
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    ports:
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: workspace_agent_minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: workspace_agent_minio_init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set myminio http://minio:9000 minioadmin ${MINIO_ROOT_PASSWORD}; do
+        echo 'Waiting for MinIO to start...';
+        sleep 2;
+      done;
+      mc mb myminio/langfuse-events --ignore-existing;
+      "
+
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: workspace_agent_langfuse_server
+    depends_on:
+      - postgres
+      - clickhouse
+      - minio
+      - redis
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      - REDIS_CONNECTION_STRING=redis://redis:6379
+      # WARNING: Standard local development secrets.
+      # This stack is designed strictly for local, air-gapped execution.
+      # DO NOT use these static strings in a public-facing or production deployment.
+      - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET}
+      - SALT=${LANGFUSE_SALT}
+      - NEXTAUTH_URL=http://localhost:3000
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_CLUSTER_ENABLED=false
+      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse-events
+      - LANGFUSE_S3_EVENT_UPLOAD_REGION=us-east-1
+      - LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=minioadmin
+      - LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT=http://minio:9000
+      - LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE=true
+      - TELEMETRY_ENABLED=false
+    restart: unless-stopped
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:latest
+    container_name: workspace_agent_langfuse_worker
+    depends_on:
+      - postgres
+      - clickhouse
+      - minio
+      - redis
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      - REDIS_CONNECTION_STRING=redis://redis:6379
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_CLUSTER_ENABLED=false
+      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse-events
+      - LANGFUSE_S3_EVENT_UPLOAD_REGION=us-east-1
+      - LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=minioadmin
+      - LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD}
+      - LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT=http://minio:9000
+      - LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE=true
+      - TELEMETRY_ENABLED=false
+    restart: unless-stopped
+
+  cloudflared:
+    # NOTE: Comment out this entire 'cloudflared' service block if you are using
+    # an alternative ingress solution (such as Ngrok or a local reverse proxy).
+    image: cloudflare/cloudflared:latest
+    container_name: workspace_agent_tunnel
+    restart: unless-stopped
+    environment:
+      # Ingests the token from .env to establish the Zero Trust tunnel
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate run
+    depends_on:
+      - gateway
+
+volumes:
+  redis_data:
+  postgres_data:
+  clickhouse_data:
+  minio_data:

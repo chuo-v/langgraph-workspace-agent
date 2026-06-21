@@ -1,0 +1,53 @@
+# ==========================================
+# Security & Configuration
+# ==========================================
+# Never bake live secrets or local configurations into the image
+.env
+.env.*
+config.yaml
+
+# ==========================================
+# Local State & Memory
+# ==========================================
+# Prevent persistent vector memory or db data from bloating the image
+.chroma/
+*.sqlite
+redis_data/
+postgres_data/
+
+# ==========================================
+# Version Control
+# ==========================================
+# The image doesn't need Git history to run
+.git/
+.gitignore
+
+# ==========================================
+# Python Artifacts & Environments
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Virtual environments should never be copied
+.venv/
+venv/
+env/
+ENV/
+
+# ==========================================
+# OS-Specific Artifacts
+# ==========================================
+# Mac system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Windows system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
