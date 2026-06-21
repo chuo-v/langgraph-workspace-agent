@@ -1,0 +1,102 @@
+[
+  {
+    "case_id": "e2e_pr_refinement",
+    "description": "Tests the agent opening a PR, receiving human feedback, updating the PR, and finally merging via webhook.",
+    "turns": [
+      {
+        "step": 1,
+        "input_type": "human_message",
+        "input": "/standard Create a new e2e_mock_env.yaml file and open a PR for the langgraph-workspace-agent-deployment repo.",
+        "expected_interrupt": "human_pr_node",
+        "expected_state": {
+          "intent_category": "workspace_operation",
+          "pending_pr_url": "__NOT_NULL__",
+          "human_approved": false,
+          "is_aborted": false
+        }
+      },
+      {
+        "step": 2,
+        "input_type": "human_message",
+        "input": "/standard Please add a completely unique placeholder called RANDOM_TEST_VAR_999 to the e2e_mock_env.yaml file.",
+        "expected_interrupt": "human_pr_node",
+        "expected_state": {
+          "intent_category": "workspace_operation",
+          "pending_pr_url": "__NOT_NULL__",
+          "human_approved": false,
+          "is_aborted": false
+        }
+      },
+      {
+        "step": 3,
+        "input_type": "webhook_payload",
+        "input": {
+          "action": "closed",
+          "pull_request": {
+            "merged": true,
+            "head": {"ref": "agent/mock-branch-name"}
+          }
+        },
+        "expected_interrupt": null,
+        "expected_tool_calls": ["cleanup_local_branch"],
+        "expected_state": {
+          "human_approved": false,
+          "active_agent_branch": null,
+          "pending_pr_url": null
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "e2e_pr_abort",
+    "description": "Tests the scenario where a human rejects the PR by closing it unmerged.",
+    "turns": [
+      {
+        "step": 1,
+        "input_type": "human_message",
+        "input": "/standard Draft a file named E2E_MOCK_README.md for the mcp-agent-test-arena repo.",
+        "expected_interrupt": "human_pr_node",
+        "expected_state": {
+          "pending_pr_url": "__NOT_NULL__"
+        }
+      },
+      {
+        "step": 2,
+        "input_type": "webhook_payload",
+        "input": {
+          "action": "closed",
+          "pull_request": {
+            "merged": false,
+            "head": {"ref": "agent/mock-branch-name"}
+          }
+        },
+        "expected_interrupt": null,
+        "expected_tool_calls": ["cleanup_local_branch"],
+        "expected_state": {
+          "is_aborted": false,
+          "active_agent_branch": null
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "e2e_task_already_completed",
+    "description": "Tests the agent's ability to gracefully bypass PR creation using the explicit escape hatch when a task is already fulfilled.",
+    "turns": [
+      {
+        "step": 1,
+        "input_type": "human_message",
+        "input": "/standard Create the file TEST_ARENA_README.md in the mcp-agent-test-arena repo. If you find that the file already exists, do not modify it and explicitly mark the task as already completed.",
+        "expected_interrupt": null,
+        "expected_tool_calls": [
+          "mark_task_already_completed"
+        ],
+        "expected_state": {
+          "intent_category": "workspace_read_only",
+          "pending_pr_url": null,
+          "is_aborted": false
+        }
+      }
+    ]
+  }
+]

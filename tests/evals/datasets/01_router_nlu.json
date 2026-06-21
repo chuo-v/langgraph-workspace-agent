@@ -1,0 +1,42 @@
+[
+  {
+    "input": "/standard Update config/toggle_settings.yaml in mcp_agent_test_arena to change both \"environment\" and \"log_level\" to \"staging-2\"",
+    "expected_output": {
+      "intent_category": "workspace_operation",
+      "inferred_workspace": "mcp_agent_test_arena",
+      "clarification_question": null
+    }
+  },
+  {
+    "input": "/standard Generate an env.yaml template with placeholder host API keys for the langgraph-workspace-agent-deployment.",
+    "expected_output": {
+      "intent_category": "workspace_operation",
+      "inferred_workspace": "langgraph_workspace_agent_deployment",
+      "clarification_question": null
+    }
+  },
+  {
+    "input": "/standard Fix the quotation mark formatting in the LaTeX report.",
+    "expected_output": {
+      "intent_category": "workspace_operation",
+      "inferred_workspace": null,
+      "clarification_question": "__NOT_NULL__"
+    }
+  },
+  {
+    "input": "/standard Can you check if the docker-compose.yml is secure enough to be made public?",
+    "expected_output": {
+      "intent_category": "workspace_read_only",
+      "inferred_workspace": null,
+      "clarification_question": "__NOT_NULL__"
+    }
+  },
+  {
+    "input": "/standard How do I securely pass an API key into a headless Docker container without baking it into the image?",
+    "expected_output": {
+      "intent_category": "conversational",
+      "inferred_workspace": null,
+      "clarification_question": null
+    }
+  }
+]
