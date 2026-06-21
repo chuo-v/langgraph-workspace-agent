@@ -1,0 +1,79 @@
+# config.example.yaml
+# Template configuration for the LangGraph Workspace Agent.
+# DO NOT place actual secrets or live paths in this file.
+# Copy this file to your private deployment repository as `config.yaml`
+# and update the values for your specific Mac Studio host.
+
+# ==========================================
+# AGENT SETTINGS
+# ==========================================
+# global orchestration parameters
+agent:
+  # the default branch the agent will sync and branch off from
+  target_branch: "main"
+  # List of GitHub usernames authorized to trigger the agent via PRs or ChatOps comments.
+  allowed_github_users:
+    - "your_github_username"
+  # how many times the agent can retry fixing a tracebacked sandbox execution
+  max_sandbox_retries: 3
+  # appends a footer to Telegram messages showing LLM API call counts
+  show_telemetry: true
+  # Text prepended to PR titles, PR comments, and commit messages (leave empty for none)
+  agent_prefix: "🤖"
+
+# ==========================================
+# LLM ROUTING & TIERS
+# ==========================================
+llm:
+  base_tier:
+    default_model: "qwen_local"
+    available_models:
+      qwen_local:
+        provider: "ollama"
+        model_name: "qwen2.5:32b"
+
+  standard_tier:
+    default_model: "deepseek_fast"
+    available_models:
+      deepseek_fast:
+        provider: "deepseek"
+        model_name: "deepseek-chat"
+
+  frontier_tier:
+    default_model: "gemini_pro"
+    available_models:
+      gemini_pro:
+        provider: "gemini"
+        model_name: "gemini-2.5-pro"
+
+# ==========================================
+# FILESYSTEM SANDBOX
+# ==========================================
+# native Filesystem MCP Server will strictly reject any read, write,
+# or search operations outside of these absolute paths
+allowed_paths:
+  - "/Users/username/git"
+
+# ==========================================
+# WORKSPACE MAPPINGS
+# ==========================================
+# maps friendly names inferred by the Tier 1 intent parser to actual
+# local paths and target synchronization branches
+workspaces:
+  example-project:
+    description: "An example repository for the agent to manage."
+    path: "/Users/username/git/example-project"
+    pre_commit_suites:
+      - name: "Ruff Format"
+        command: "ruff format ."
+        timeout_seconds: 30
+      - name: "Ruff Check & Fix"
+        command: "ruff check --fix"
+        timeout_seconds: 45
+    ci_suites:
+      - name: "NLU Component Evaluator"
+        command: "python -m tests.evals.run_router_evals --eval"
+        timeout_seconds: 60
+      - name: "E2E Pipeline Evaluator"
+        command: "python -m tests.evals.run_e2e_evals --eval"
+        timeout_seconds: 180
