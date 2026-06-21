@@ -1,0 +1,91 @@
+[tool.poetry]
+name = "langgraph-workspace-agent"
+version = "0.1.0"
+description = "FastAPI-based webhook gateway and orchestrator for an autonomous LangGraph workspace agent"
+authors = ["Vernon Chuo Chian Khye"]
+readme = "README.md"
+packages = [{include = "workspace_agent", from = "src"}]
+
+[project]
+name = "langgraph-workspace-agent"
+version = "0.1.0"
+description = "FastAPI-based webhook gateway and orchestrator for an autonomous LangGraph workspace agent"
+authors = [
+    { name = "Vernon Chuo Chian Khye", email = "vchuo93@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "langchain>=0.1.11",
+    "langchain-core>=0.1.30",
+    "langgraph>=0.0.26",
+    "pydantic>=2.6.3",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.1",
+    "redis>=5.0.2",
+    "langfuse>=2.1.3",
+    "chromadb>=0.4.24",
+    "gitpython>=3.1.42"
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=0.1.0"]
+
+[tool.ruff]
+target-version = "py311"
+
+line-length = 100
+
+# directory exclusions
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".chroma",
+]
+
+[tool.ruff.lint]
+# rulesets to enable
+# E/F: Pyflakes and Error (Standard)
+# I: Isort (Import sorting)
+# N: pep8-naming
+# UP: pyupgrade (Modernize syntax)
+# PL: Pylint
+# B: Bugbear (Common bugs)
+select = ["E", "F", "I", "N", "UP", "PL", "B"]
+
+# rules to ignore
+ignore = []
+
+[tool.ruff.lint.isort]
+# ensure imports are sorted and grouped logically
+known-first-party = ["src"]
+
+[tool.ruff.format]
+# standardize on double quotes and consistent indentation
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint.per-file-ignores]
+# ignore "magic values" (PLR2004) in the tests directory
+"tests/**/*" = ["PLR2004"]
+
+[tool.pytest.ini_options]
+# treat root of repo as a source directory
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = [
+    # suppress LangChain's allowed_objects warning
+    "ignore:.*The default value of `allowed_objects` will change in a future version.*",
+    # suppress environment variable path warning if it originates from the git package
+    "ignore:.*The use of environment variables in paths is deprecated.*::git.*",
+    # suppress FastAPI/Starlette internal deprecation noise regarding the TestClient
+    "ignore:.*Using `httpx` with `starlette.testclient` is deprecated.*:DeprecationWarning",
+    "ignore:.*Using `httpx` with `starlette.testclient` is deprecated.*:UserWarning"
+]
+
+[tool.poetry.scripts]
+# allows booting the local dev server via: `poetry run dev`
+dev = "uvicorn src.workspace_agent.main:app --reload --host 127.0.0.1 --port 8000"
