@@ -34,7 +34,7 @@ services:
       # Persist the local vector memory across container rebuilds
       - ./.chroma:/app/.chroma
       # Inject the dynamic routing and workspace configuration file
-      - ./config.yaml:/app/config.yaml
+      - ${WORKSPACE_AGENT_CONFIG_PATH:-./config.yaml}:/app/config.yaml
     ports:
       # Webhook reverse-proxy will route incoming traffic here
       - "127.0.0.1:8000:8000"
