@@ -147,6 +147,42 @@ class MockWorkspaceTracker:
             except Exception as e:
                 print(f"      [!] Sandbox cleanup warning: {e}")
 
+    def _mock_run_python_script(self, *args, **kwargs) -> str:
+        """Reads the actual state of the file from the ephemeral disk to verify fixes."""
+        script_path = kwargs.get("script_path") or (args[0] if args else "")
+
+        self.invocation_history.append(
+            {"tool": "run_python_script", "kwargs": {"script_path": script_path}}
+        )
+
+        target_path = script_path
+        if not os.path.isabs(script_path):
+            # Resolve the path relative to the active sandboxes if passed relatively
+            for base_path in self.sandbox_paths.values():
+                possible_path = os.path.join(base_path, script_path)
+                if os.path.exists(possible_path):
+                    target_path = possible_path
+                    break
+
+        if os.path.exists(target_path):
+            with open(target_path) as f:
+                content = f.read()
+
+            # Check if the bug is still present. We check if they added a return 0 safety.
+            if "a / b" in content and "return 0" not in content:
+                return (
+                    "Traceback (most recent call last):\n"
+                    '  File "calculator.py", line 4, in <module>\n'
+                    "    print(divide(10, 0))\n"
+                    '  File "calculator.py", line 2, in divide\n'
+                    "    return a / b\n"
+                    "ZeroDivisionError: division by zero"
+                )
+
+            return "Execution successful.\nOutput:\n0"
+
+        return f"Error: File {script_path} not found."
+
     def _mock_create_pr(self, *args, **kwargs):
         self.invocation_history.append({"tool": "open_pull_request", "kwargs": kwargs})
         return json.dumps(
