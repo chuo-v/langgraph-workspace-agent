@@ -28,6 +28,22 @@ if os.path.exists(DEPLOYMENT_ENV_PATH):
 else:
     load_dotenv()
 
+# If executing locally on a host machine terminal (not inside a Docker container
+# and not in an automated CI pipeline), remap internal Docker service endpoints
+# to localhost loopback ports.
+IS_INSIDE_CONTAINER = os.path.exists("/.dockerenv")
+if not os.getenv("CI") and not IS_INSIDE_CONTAINER:
+    for key, value in os.environ.items():
+        if isinstance(value, str):
+            if "host.docker.internal" in value:
+                os.environ[key] = value.replace("host.docker.internal", "127.0.0.1")
+            if "redis" in value and "://" in value:
+                os.environ[key] = value.replace("redis:6379", "127.0.0.1:6379").replace(
+                    "redis://redis", "redis://127.0.0.1"
+                )
+            if "ollama:11434" in value:
+                os.environ[key] = value.replace("ollama:11434", "127.0.0.1:11434")
+
 DATASET_NAME = "workspace_agent_eval_e2e_pipeline"
 DATASET_PATH = os.path.join(CURRENT_DIR, "datasets", "02_e2e_pipeline.json")
 
