@@ -336,8 +336,10 @@ def process_ci_trigger(ci_trigger: dict, io_deps: IODependencies):
     for ws_name, ws_config in settings.workspaces.items():
         # safely expand user root path just in case
         expanded_path = os.path.expanduser(ws_config.path).rstrip("/")
-        # match the explicit workspace name OR the directory name
-        if expanded_path.endswith(repo_name) or ws_name == repo_name:
+        folder_name = os.path.basename(expanded_path)
+
+        # Match exact workspace name, exact folder name, or dev clone suffixes (e.g., -dev)
+        if repo_name in (ws_name, folder_name) or folder_name.startswith(f"{repo_name}-"):
             target_path = ws_config.path
             break
 
