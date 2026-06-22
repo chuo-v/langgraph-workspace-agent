@@ -121,7 +121,7 @@ This stack is optimized for single-user execution on personal workstations or de
 
 ### Initializing the Services
 
-With your `.env` configured and your paths set up (refer to [`docs/02_configuration.md`](https://www.google.com/search?q=../docs/02_configuration.md) for `config.yaml` details), you are ready to boot the background services and build the sandbox.
+With your `.env` configured and your paths set up (refer to [`docs/02_configuration.md`](../docs/02_configuration.md) for `config.yaml` details), you are ready to boot the background services and build the sandbox.
 
 ```bash
 # 1. Rebuild and gracefully restart the background daemon containers
