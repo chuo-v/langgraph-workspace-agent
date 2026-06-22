@@ -338,11 +338,12 @@ def test_create_branch_and_commit_error_injection_prevention(setup_git_workspace
 # ==========================================
 
 
-def test_open_pull_request_success(monkeypatch, mocker):
+def test_open_pull_request_success(setup_git_workspace, monkeypatch, mocker):
     """
     Green Path: Mocks the httpx POST request to simulate a successful
     201 Created response from the GitHub API and verifies the URL extraction.
     """
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     # mock the httpx client and its post method
@@ -363,7 +364,7 @@ def test_open_pull_request_success(monkeypatch, mocker):
         "src.workspace_agent.tools.github.httpx.Client.__enter__", return_value=mock_client_instance
     )
 
-    result_json = open_pull_request("owner/repo", "Add KAN-TabNet Evaluation", "feature-eval")
+    result_json = open_pull_request(str(safe_dir), "Add KAN-TabNet Evaluation", "feature-eval")
     result = json.loads(result_json)
 
     assert result["status"] == "success"
@@ -376,21 +377,23 @@ def test_open_pull_request_success(monkeypatch, mocker):
     assert kwargs["json"]["title"] == "Add KAN-TabNet Evaluation"
 
 
-def test_open_pull_request_error_missing_token(monkeypatch):
+def test_open_pull_request_error_missing_token(setup_git_workspace, monkeypatch):
     """Red Path: Fails gracefully if GITHUB_TOKEN is not in the environment."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
-    result_json = open_pull_request("owner/repo", "Test PR", "feature")
+    result_json = open_pull_request(str(safe_dir), "Test PR", "feature")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
     assert result["reason"] == "missing_github_token"
 
 
-def test_open_pull_request_error_api_failure(monkeypatch, mocker):
+def test_open_pull_request_error_api_failure(setup_git_workspace, monkeypatch, mocker):
     """
     Red Path: Gracefully handles an error response (e.g., 422 Unprocessable Entity) from GitHub.
     """
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     mock_client_instance = mocker.MagicMock()
@@ -404,7 +407,7 @@ def test_open_pull_request_error_api_failure(monkeypatch, mocker):
         "src.workspace_agent.tools.github.httpx.Client.__enter__", return_value=mock_client_instance
     )
 
-    result_json = open_pull_request("owner/repo", "Test PR", "feature-branch")
+    result_json = open_pull_request(str(safe_dir), "Test PR", "feature-branch")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
@@ -413,8 +416,9 @@ def test_open_pull_request_error_api_failure(monkeypatch, mocker):
     assert "Validation Failed" in result["details"]
 
 
-def test_open_pull_request_error_unexpected_exception(monkeypatch, mocker):
+def test_open_pull_request_error_unexpected_exception(setup_git_workspace, monkeypatch, mocker):
     """Red Path: Gracefully handles unexpected exceptions (like catastrophic network timeouts)."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     # Mock the httpx Client context manager entry to instantly raise an Exception
@@ -423,7 +427,7 @@ def test_open_pull_request_error_unexpected_exception(monkeypatch, mocker):
         side_effect=Exception("Catastrophic Network Timeout"),
     )
 
-    result_json = open_pull_request("owner/repo", "Test PR", "feature-branch")
+    result_json = open_pull_request(str(safe_dir), "Test PR", "feature-branch")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
@@ -436,8 +440,9 @@ def test_open_pull_request_error_unexpected_exception(monkeypatch, mocker):
 # ==========================================
 
 
-def test_update_pull_request_success(monkeypatch, mocker):
+def test_update_pull_request_success(setup_git_workspace, monkeypatch, mocker):
     """Green Path: Simulates a successful PATCH request to update an existing PR."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     mock_response = mocker.MagicMock()
@@ -446,37 +451,40 @@ def test_update_pull_request_success(monkeypatch, mocker):
 
     mocker.patch("src.workspace_agent.tools.github.httpx.patch", return_value=mock_response)
 
-    result_json = update_pull_request("owner/repo", 123, title="New Title", body="New Body")
+    result_json = update_pull_request(str(safe_dir), 123, title="New Title", body="New Body")
     result = json.loads(result_json)
 
     assert result["status"] == "success"
     assert result["pr_url"] == "https://github.com/owner/repo/pull/123"
 
 
-def test_update_pull_request_error_missing_token(monkeypatch):
+def test_update_pull_request_error_missing_token(setup_git_workspace, monkeypatch):
     """Red Path: Fails gracefully if GITHUB_TOKEN is missing during an update."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
-    result_json = update_pull_request("owner/repo", 123, title="New Title")
+    result_json = update_pull_request(str(safe_dir), 123, title="New Title")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
     assert result["reason"] == "Missing GITHUB_TOKEN environment variable."
 
 
-def test_update_pull_request_error_no_payload(monkeypatch):
+def test_update_pull_request_error_no_payload(setup_git_workspace, monkeypatch):
     """Red Path: Fails gracefully if the orchestrator tries to update without a title or body."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
-    result_json = update_pull_request("owner/repo", 123)
+    result_json = update_pull_request(str(safe_dir), 123)
     result = json.loads(result_json)
 
     assert result["status"] == "error"
     assert "No title or body provided" in result["reason"]
 
 
-def test_update_pull_request_error_api_failure(monkeypatch, mocker):
+def test_update_pull_request_error_api_failure(setup_git_workspace, monkeypatch, mocker):
     """Red Path: Handles GitHub API rejection during an update (e.g., 422 Unprocessable Entity)."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     mock_response = mocker.MagicMock()
@@ -484,7 +492,7 @@ def test_update_pull_request_error_api_failure(monkeypatch, mocker):
     mock_response.text = "Validation Failed"
     mocker.patch("src.workspace_agent.tools.github.httpx.patch", return_value=mock_response)
 
-    result_json = update_pull_request("owner/repo", 123, title="Bad Title")
+    result_json = update_pull_request(str(safe_dir), 123, title="Bad Title")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
@@ -497,8 +505,9 @@ def test_update_pull_request_error_api_failure(monkeypatch, mocker):
 # ==========================================
 
 
-def test_comment_on_pull_request_success(monkeypatch, mocker):
+def test_comment_on_pull_request_success(setup_git_workspace, monkeypatch, mocker):
     """Green Path: Simulates a successful POST request to add a PR comment."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     mock_client_instance = mocker.MagicMock()
@@ -514,7 +523,7 @@ def test_comment_on_pull_request_success(monkeypatch, mocker):
         "src.workspace_agent.tools.github.httpx.Client.__enter__", return_value=mock_client_instance
     )
 
-    result_json = comment_on_pull_request("owner/repo", 1, "Agent evaluation completed.")
+    result_json = comment_on_pull_request(str(safe_dir), 1, "Agent evaluation completed.")
     result = json.loads(result_json)
 
     assert result["status"] == "success"
@@ -526,19 +535,21 @@ def test_comment_on_pull_request_success(monkeypatch, mocker):
     assert kwargs["json"]["body"] == "Agent evaluation completed."
 
 
-def test_comment_on_pull_request_error_missing_token(monkeypatch):
+def test_comment_on_pull_request_error_missing_token(setup_git_workspace, monkeypatch):
     """Red Path: Fails gracefully if GITHUB_TOKEN is missing."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
-    result_json = comment_on_pull_request("owner/repo", 1, "Test comment")
+    result_json = comment_on_pull_request(str(safe_dir), 1, "Test comment")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
     assert result["reason"] == "missing_github_token"
 
 
-def test_comment_on_pull_request_error_api_failure(monkeypatch, mocker):
+def test_comment_on_pull_request_error_api_failure(setup_git_workspace, monkeypatch, mocker):
     """Red Path: Handles GitHub API rejection."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     mock_client_instance = mocker.MagicMock()
@@ -552,7 +563,7 @@ def test_comment_on_pull_request_error_api_failure(monkeypatch, mocker):
         "src.workspace_agent.tools.github.httpx.Client.__enter__", return_value=mock_client_instance
     )
 
-    result_json = comment_on_pull_request("owner/repo", 1, "Test comment")
+    result_json = comment_on_pull_request(str(safe_dir), 1, "Test comment")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
@@ -561,8 +572,11 @@ def test_comment_on_pull_request_error_api_failure(monkeypatch, mocker):
     assert "Forbidden" in result["details"]
 
 
-def test_comment_on_pull_request_error_unexpected_exception(monkeypatch, mocker):
+def test_comment_on_pull_request_error_unexpected_exception(
+    setup_git_workspace, monkeypatch, mocker
+):
     """Red Path: Handles unexpected exceptions during API call."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     mocker.patch(
@@ -570,7 +584,7 @@ def test_comment_on_pull_request_error_unexpected_exception(monkeypatch, mocker)
         side_effect=Exception("Network failure"),
     )
 
-    result_json = comment_on_pull_request("owner/repo", 1, "Test comment")
+    result_json = comment_on_pull_request(str(safe_dir), 1, "Test comment")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
@@ -583,8 +597,9 @@ def test_comment_on_pull_request_error_unexpected_exception(monkeypatch, mocker)
 # ==========================================
 
 
-def test_set_commit_status_success(monkeypatch, mocker):
+def test_set_commit_status_success(setup_git_workspace, monkeypatch, mocker):
     """Green Path: Simulates a successful POST request to update a commit status."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     mock_client_instance = mocker.MagicMock()
@@ -598,7 +613,7 @@ def test_set_commit_status_success(monkeypatch, mocker):
     )
 
     result_json = set_commit_status(
-        "owner/repo", "sha12345", "success", "Agentic CI", "Tests passed"
+        str(safe_dir), "sha12345", "success", "Agentic CI", "Tests passed"
     )
     result = json.loads(result_json)
 
@@ -614,11 +629,12 @@ def test_set_commit_status_success(monkeypatch, mocker):
     assert kwargs["json"]["description"] == "Tests passed"
 
 
-def test_set_commit_status_error_invalid_state(monkeypatch):
+def test_set_commit_status_error_invalid_state(setup_git_workspace, monkeypatch):
     """Red Path: Rejects an invalid commit status state locally before calling the API."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
-    result_json = set_commit_status("owner/repo", "sha12345", "invalid_state", "Context")
+    result_json = set_commit_status(str(safe_dir), "sha12345", "invalid_state", "Context")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
@@ -626,19 +642,21 @@ def test_set_commit_status_error_invalid_state(monkeypatch):
     assert "invalid_state" in result["details"]
 
 
-def test_set_commit_status_error_missing_token(monkeypatch):
+def test_set_commit_status_error_missing_token(setup_git_workspace, monkeypatch):
     """Red Path: Fails gracefully if GITHUB_TOKEN is missing."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
-    result_json = set_commit_status("owner/repo", "sha12345", "success", "Context")
+    result_json = set_commit_status(str(safe_dir), "sha12345", "success", "Context")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
     assert result["reason"] == "missing_github_token"
 
 
-def test_set_commit_status_error_api_failure(monkeypatch, mocker):
+def test_set_commit_status_error_api_failure(setup_git_workspace, monkeypatch, mocker):
     """Red Path: Handles GitHub API rejection."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     mock_client_instance = mocker.MagicMock()
@@ -652,7 +670,7 @@ def test_set_commit_status_error_api_failure(monkeypatch, mocker):
         "src.workspace_agent.tools.github.httpx.Client.__enter__", return_value=mock_client_instance
     )
 
-    result_json = set_commit_status("owner/repo", "sha12345", "success", "Context")
+    result_json = set_commit_status(str(safe_dir), "sha12345", "success", "Context")
     result = json.loads(result_json)
 
     assert result["status"] == "error"
@@ -661,8 +679,9 @@ def test_set_commit_status_error_api_failure(monkeypatch, mocker):
     assert "Not Found" in result["details"]
 
 
-def test_set_commit_status_error_unexpected_exception(monkeypatch, mocker):
+def test_set_commit_status_error_unexpected_exception(setup_git_workspace, monkeypatch, mocker):
     """Red Path: Handles unexpected exceptions during API call."""
+    safe_dir, _ = setup_git_workspace
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
     mocker.patch(
@@ -670,7 +689,7 @@ def test_set_commit_status_error_unexpected_exception(monkeypatch, mocker):
         side_effect=Exception("Timeout"),
     )
 
-    result_json = set_commit_status("owner/repo", "sha12345", "success", "Context")
+    result_json = set_commit_status(str(safe_dir), "sha12345", "success", "Context")
     result = json.loads(result_json)
 
     assert result["status"] == "error"

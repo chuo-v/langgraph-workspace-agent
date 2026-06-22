@@ -1078,11 +1078,10 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
     and natively reports status checks and log aggregations back to the GitHub Pull Request.
     """
     target_path = state.get("workspace_absolute_path")
-    repo_full_name = state.get("repo_full_name")
     commit_sha = state.get("commit_sha")
     pr_number = state.get("pr_number")
 
-    if not target_path or not repo_full_name or not commit_sha or not pr_number:
+    if not target_path or not commit_sha or not pr_number:
         # Skip if missing necessary GitHub webhook context
         return {}
 
@@ -1099,7 +1098,7 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
     for suite in workspace_config.ci_suites:
         context_str = f"Agentic CI / {suite.name}"
         set_commit_status(
-            repo_full_name=repo_full_name,
+            directory=target_path,
             commit_sha=commit_sha,
             state="pending",
             context_str=context_str,
@@ -1126,7 +1125,7 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
             logs = f"{process.stdout}\n{process.stderr}".strip()
 
             set_commit_status(
-                repo_full_name=repo_full_name,
+                directory=target_path,
                 commit_sha=commit_sha,
                 state="success" if passed else "failure",
                 context_str=context_str,
@@ -1153,7 +1152,7 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
             ).strip()
 
             set_commit_status(
-                repo_full_name=repo_full_name,
+                directory=target_path,
                 commit_sha=commit_sha,
                 state="failure",
                 context_str=context_str,
@@ -1163,7 +1162,7 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
             results.append({"name": suite.name, "passed": False, "logs": logs})
         except Exception as e:
             set_commit_status(
-                repo_full_name=repo_full_name,
+                directory=target_path,
                 commit_sha=commit_sha,
                 state="error",
                 context_str=context_str,
@@ -1198,9 +1197,7 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
             f"## {prefix_str}Agentic CI/CD Results\n\n{summary_table}\n{details_sections}"
         )
 
-        comment_on_pull_request(
-            repo_full_name=repo_full_name, pr_number=pr_number, body=comment_body
-        )
+        comment_on_pull_request(directory=target_path, pr_number=pr_number, body=comment_body)
 
     return {"ci_results": results}
 
@@ -1352,21 +1349,21 @@ def _chunk_git_diff(raw_diff: str, max_chunk_length: int = MAX_DIFF_LENGTH) -> l
 
 
 def _attempt_pr_update(
-    repo_full_name: str,
+    directory: str,
     pending_pr_url: str,
     pr_title: str,
     generated_body: str,
     generated_summary: str,
 ) -> str:
     """Attempts to patch an existing GitHub PR. Returns a status message string."""
-    if not repo_full_name or not pending_pr_url:
+    if not directory or not pending_pr_url:
         return ""
 
     try:
         pr_number = int(pending_pr_url.rstrip("/").split("/")[-1])
         update_res = json.loads(
             update_pull_request(
-                repo_full_name=repo_full_name,
+                directory=directory,
                 pr_number=pr_number,
                 title=pr_title,
                 body=generated_body,
@@ -1501,9 +1498,6 @@ def review_pr_node(state: PRState, config: RunnableConfig = None) -> dict:
             commit_response, state.get("execution_retry_count", 0), branch_name
         )
 
-    github_username = os.getenv("GITHUB_USERNAME")
-    repo_full_name = f"{github_username}/{repo_name}" if github_username else None
-
     raw_prefix = settings.agent.agent_prefix or ""
     prefix_str = f"{raw_prefix} " if raw_prefix and not raw_prefix.endswith(" ") else raw_prefix
 
@@ -1511,7 +1505,7 @@ def review_pr_node(state: PRState, config: RunnableConfig = None) -> dict:
     if is_refining:
         pr_title = f"{prefix_str}{generated_summary}"
         update_status_msg = _attempt_pr_update(
-            repo_full_name, pending_pr_url, pr_title, generated_body, generated_summary
+            target_path, pending_pr_url, pr_title, generated_body, generated_summary
         )
 
         msg = (
@@ -1524,24 +1518,9 @@ def review_pr_node(state: PRState, config: RunnableConfig = None) -> dict:
         return {"messages": [AIMessage(content=msg)]}
 
     # 6. Open a new PR
-    if not github_username:
-        return {
-            "active_agent_branch": branch_name,
-            "messages": [
-                AIMessage(
-                    content=(
-                        "⚠️ **Configuration Error:** `GITHUB_USERNAME` is missing from the "
-                        "environment variables. The code was committed locally, but the "
-                        "Pull Request could not be opened. *Aborting and cleaning up.*"
-                    )
-                )
-            ],
-            "is_aborted": True,
-        }
-
     pr_title = f"{prefix_str}{generated_summary}"
     pr_response = open_pull_request(
-        repo_full_name=repo_full_name,
+        directory=target_path,
         title=pr_title,
         head_branch=branch_name,
         base_branch=state.get("target_branch", "main"),

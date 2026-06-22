@@ -17,6 +17,21 @@ def _sanitize_branch_name(branch_name: str | None) -> None:
         )
 
 
+def _get_repo_full_name(directory: str) -> str | None:
+    """Extracts the 'owner/repo' string dynamically from the local git remote."""
+    try:
+        allowed = get_allowed_paths()
+        repo_path = secure_resolve_path(directory, allowed)
+        repo = Repo(repo_path)
+        current_url = next(repo.remotes.origin.urls)
+        match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return None
+
+
 # ==========================================
 # Core Git & GitHub Functions (Native Tools)
 # ==========================================
@@ -147,11 +162,11 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
 
 
 def open_pull_request(
-    repo_full_name: str, title: str, head_branch: str, base_branch: str = "main", body: str = ""
+    directory: str, title: str, head_branch: str, base_branch: str = "main", body: str = ""
 ) -> str:
     """
     Opens a Pull Request via the GitHub REST API using the GITHUB_TOKEN environment variable.
-    repo_full_name must be formatted as 'owner/repo'.
+    Extracts the repo_full_name dynamically from the local git remote.
     Returns a structured JSON string containing the PR URL.
     """
     _sanitize_branch_name(head_branch)
@@ -160,6 +175,10 @@ def open_pull_request(
     token = os.getenv("GITHUB_TOKEN")
     if not token:
         return json.dumps({"status": "error", "reason": "missing_github_token"})
+
+    repo_full_name = _get_repo_full_name(directory)
+    if not repo_full_name:
+        return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
     url = f"https://api.github.com/repos/{repo_full_name}/pulls"
     headers = {
@@ -191,9 +210,7 @@ def open_pull_request(
         return json.dumps({"status": "error", "reason": "unexpected_error", "details": str(e)})
 
 
-def update_pull_request(
-    repo_full_name: str, pr_number: int, title: str = None, body: str = None
-) -> str:
+def update_pull_request(directory: str, pr_number: int, title: str = None, body: str = None) -> str:
     """
     Updates the title and/or body of an existing GitHub Pull Request.
     """
@@ -202,6 +219,10 @@ def update_pull_request(
         return json.dumps(
             {"status": "error", "reason": "Missing GITHUB_TOKEN environment variable."}
         )
+
+    repo_full_name = _get_repo_full_name(directory)
+    if not repo_full_name:
+        return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
     url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}"
     headers = {
@@ -319,14 +340,17 @@ def get_git_diff_blueprint(directory: str, target_branch: str = None) -> str:
         return f"Error retrieving git blueprint: {e}"
 
 
-def comment_on_pull_request(repo_full_name: str, pr_number: int, body: str) -> str:
+def comment_on_pull_request(directory: str, pr_number: int, body: str) -> str:
     """
     Posts a Markdown comment on an existing GitHub Pull Request.
-    repo_full_name must be formatted as 'owner/repo'.
     """
     token = os.getenv("GITHUB_TOKEN")
     if not token:
         return json.dumps({"status": "error", "reason": "missing_github_token"})
+
+    repo_full_name = _get_repo_full_name(directory)
+    if not repo_full_name:
+        return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
     # PR comments use the issues endpoint in the GitHub REST API
     url = f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments"
@@ -359,15 +383,18 @@ def comment_on_pull_request(repo_full_name: str, pr_number: int, body: str) -> s
 
 
 def set_commit_status(
-    repo_full_name: str, commit_sha: str, state: str, context_str: str, description: str = ""
+    directory: str, commit_sha: str, state: str, context_str: str, description: str = ""
 ) -> str:
     """
     Sets the CI status (pending, success, error, failure) of a commit via the GitHub REST API.
-    repo_full_name must be formatted as 'owner/repo'.
     """
     token = os.getenv("GITHUB_TOKEN")
     if not token:
         return json.dumps({"status": "error", "reason": "missing_github_token"})
+
+    repo_full_name = _get_repo_full_name(directory)
+    if not repo_full_name:
+        return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
     url = f"https://api.github.com/repos/{repo_full_name}/statuses/{commit_sha}"
     headers = {

@@ -1339,8 +1339,7 @@ def test_agentic_ci_node_fallback_missing_context():
     """Edge Path: Ensure node bypasses execution if missing webhook context."""
     state = {
         "workspace_absolute_path": "/tmp/test",
-        "repo_full_name": None,  # Missing context explicitly
-        "commit_sha": "sha123",
+        "commit_sha": None,  # Missing context explicitly
         "pr_number": 42,
     }
 
@@ -1516,7 +1515,7 @@ def test_review_pr_node_success_refining_existing_pr(mocker):
     mock_update.assert_called_once()
     args, kwargs = mock_update.call_args
     assert kwargs["pr_number"] == 123
-    assert kwargs["repo_full_name"] == "test_owner/test"
+    assert kwargs["directory"] == "/tmp/test"
 
 
 def test_review_pr_node_fallback_diff_extraction_failure(mocker):
@@ -1652,30 +1651,6 @@ def test_review_pr_node_error_github_api_rejection(mocker):
     assert result.get("is_aborted") is True
     assert "PR Creation Failed" in result["messages"][0].content
     assert "Branch protected" in result["messages"][0].content
-
-
-def test_review_pr_node_error_missing_github_config(mocker):
-    """Red Path: review_pr_node aborts safely if GITHUB_USERNAME is missing."""
-    mocker.patch("src.workspace_agent.orchestrator.nodes.os.getenv", return_value=None)
-
-    # mock LLM to avoid calling Ollama during unit tests
-    mock_llm = mocker.Mock()
-    mock_llm.invoke.return_value.content = "mocked summary"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
-
-    mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.create_branch_and_commit",
-        return_value='{"status": "success", "branch": "test-branch"}',
-    )
-
-    state = {
-        "workspace_absolute_path": "/tmp/test",
-        "original_instruction": "test instruction",
-    }
-    result = review_pr_node(state)
-
-    assert result.get("is_aborted") is True
-    assert "Configuration Error" in result["messages"][0].content
 
 
 def test_review_pr_node_error_self_healing_trap_max_retries(mocker):
