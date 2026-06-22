@@ -6,15 +6,6 @@ import uuid
 from datetime import datetime
 
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage
-from langfuse import Langfuse, get_client, propagate_attributes
-from langfuse.langchain import CallbackHandler
-
-from src.workspace_agent.integrations.github_webhook import parse_github_pr_action
-
-# --- E2E Integration Imports ---
-from src.workspace_agent.orchestrator.graph import agent_app
-from tests.evals.mock_workspace import MockWorkspaceTracker
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(CURRENT_DIR))
@@ -27,6 +18,14 @@ if os.path.exists(DEPLOYMENT_ENV_PATH):
     load_dotenv(dotenv_path=DEPLOYMENT_ENV_PATH)
 else:
     load_dotenv()
+
+from langchain_core.messages import HumanMessage  # noqa: E402
+from langfuse import Langfuse, get_client, propagate_attributes  # noqa: E402
+from langfuse.langchain import CallbackHandler  # noqa: E402
+
+from src.workspace_agent.integrations.github_webhook import parse_github_pr_action  # noqa: E402
+from src.workspace_agent.orchestrator.graph import agent_app  # noqa: E402
+from tests.evals.mock_workspace import MockWorkspaceTracker  # noqa: E402
 
 # If executing locally on a host machine terminal (not inside a Docker container
 # and not in an automated CI pipeline), remap internal Docker service endpoints
