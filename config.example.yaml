@@ -2,7 +2,7 @@
 # Template configuration for the LangGraph Workspace Agent.
 # DO NOT place actual secrets or live paths in this file.
 # Copy this file to your private deployment repository as `config.yaml`
-# and update the values for your specific Mac Studio host.
+# and update the values for your specific host machine.
 
 # ==========================================
 # AGENT SETTINGS
