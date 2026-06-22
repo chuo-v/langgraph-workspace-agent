@@ -53,6 +53,11 @@ class MockWorkspaceTracker:
                 with open(readme_path, "w") as f:
                     f.write(f"# Ephemeral Sandbox for {ws_name}")
 
+            # Seed faulty Python script for eval self-correction test
+            calc_path = os.path.join(temp_path, "calculator.py")
+            with open(calc_path, "w") as f:
+                f.write("def divide(a, b):\n    return a / b\n\nprint(divide(10, 0))\n")
+
             repo.git.add(A=True)
             repo.git.commit("-m", "Initial sandbox commit")
 
@@ -106,6 +111,10 @@ class MockWorkspaceTracker:
         self.patcher_delete = patch("src.workspace_agent.orchestrator.nodes.cleanup_local_branch")
         self.mock_delete = self.patcher_delete.start()
         self.mock_delete.side_effect = self._mock_delete_branch
+
+        self.patcher_python = patch("src.workspace_agent.tools.sandbox.run_python_script")
+        self.mock_python = self.patcher_python.start()
+        self.mock_python.side_effect = self._mock_run_python_script
 
         # Acts as an inescapable choke point for native tool execution observability
         self.patcher_exec = patch("src.workspace_agent.orchestrator.nodes.execute_tool_call")
