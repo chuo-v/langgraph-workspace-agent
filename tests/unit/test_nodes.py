@@ -851,6 +851,37 @@ def test_workspace_tools_node_error_sandbox_crash_max_retries(mocker):
 # ==========================================
 
 
+def test_execute_task_node_success_standard(mocker):
+    """Green Path: Successfully invokes the execution LLM API without aborting."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.sync_repository",
+        return_value='{"status": "success"}',
+    )
+    # Mock the LLM to return a standard AIMessage with a tool call
+    mock_llm = mocker.Mock()
+    mock_llm.bind_tools.return_value.invoke.return_value = AIMessage(
+        content="I will do the task now.",
+        tool_calls=[{"name": "read_files", "args": {}, "id": "call_123"}],
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "execution_retry_count": 0,
+        "messages": [HumanMessage(content="Do the task")],
+    }
+    result = execute_task_node(state, {"configurable": {"thread_id": "123"}})
+
+    # Verify the workflow did not trigger circuit breakers, abort, or increment retries
+    assert result.get("is_aborted", False) is False
+    assert result.get("latest_traceback_error") is None
+    assert result.get("execution_retry_count", 0) == 0
+
+    # Verify the AI message was properly appended to state
+    assert isinstance(result["messages"][-1], AIMessage)
+    assert result["messages"][-1].content == "I will do the task now."
+
+
 def test_execute_task_node_fallback_api_invocation_crash(mocker):
     """Edge Path: execute_task_node catches LLM API crash and returns a SYSTEM ERROR."""
     mocker.patch(
@@ -1461,6 +1492,53 @@ def test_compile_node_error_max_retries(mocker):
 # ==========================================
 # Workflow: PR & Git Review Node
 # ==========================================
+
+
+def test_review_pr_node_success_new_pr(mocker):
+    """
+    Green Path: If the agent has no pending PR, it successfully opens a new one after
+    committing the changes to a newly generated branch.
+    """
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.create_branch_and_commit",
+        return_value='{"status": "success"}',
+    )
+    # mock environment and diff snippets
+    mocker.patch("src.workspace_agent.orchestrator.nodes.os.getenv", return_value="test_owner")
+    mocker.patch("src.workspace_agent.orchestrator.nodes.get_git_diff", return_value="diff snippet")
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_git_diff_blueprint",
+        return_value="A\tnew_file.py",
+    )
+    # mock LLM for PR metadata generation
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "mocked summary"
+    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    # mock the PR creation tool explicitly
+    mock_open_pr = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.open_pull_request",
+        return_value='{"status": "success", "pr_url": "https://github.com/owner/repo/pull/456"}',
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "original_instruction": "add new feature",
+        "pending_pr_url": None,  # Explicitly None to trigger new PR logic
+    }
+    result = review_pr_node(state)
+
+    # Verify workflow succeeded
+    assert result.get("is_aborted", False) is False
+    assert "Execution Complete" in result["messages"][0].content
+    assert result.get("pending_pr_url") == "https://github.com/owner/repo/pull/456"
+
+    # Verify the PR tool was called with the correct keyword parameters
+    mock_open_pr.assert_called_once()
+    _, kwargs = mock_open_pr.call_args
+    assert kwargs["directory"] == "/tmp/test"
+    # The branch name is dynamically generated using the LLM summary + UUID
+    assert kwargs["head_branch"].startswith("agent/mocked-summary-")
+    assert "mocked summary" in kwargs["title"]
 
 
 def test_review_pr_node_success_refining_existing_pr(mocker):
