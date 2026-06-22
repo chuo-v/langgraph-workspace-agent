@@ -5,11 +5,6 @@ import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage
-from langfuse import Langfuse, get_client, propagate_attributes
-
-# Directly import just the parsing node, bypassing the full graph and tool execution
-from src.workspace_agent.orchestrator.nodes import parse_intent_node
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(CURRENT_DIR))
@@ -21,6 +16,12 @@ if os.path.exists(DEPLOYMENT_ENV_PATH):
     load_dotenv(dotenv_path=DEPLOYMENT_ENV_PATH)
 else:
     load_dotenv()
+
+from langchain_core.messages import HumanMessage  # noqa: E402
+from langfuse import Langfuse, get_client, propagate_attributes  # noqa: E402
+
+# Directly import just the parsing node, bypassing the full graph and tool execution
+from src.workspace_agent.orchestrator.nodes import parse_intent_node  # noqa: E402
 
 DATASET_NAME = "workspace_agent_eval_router_nlu"
 DATASET_PATH = os.path.join(CURRENT_DIR, "datasets", "01_router_nlu.json")
