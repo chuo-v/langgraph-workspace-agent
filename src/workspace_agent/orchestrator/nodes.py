@@ -1049,7 +1049,12 @@ def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:  
                         f"to satisfy the requirements after {retry_count} attempts.\n\n"
                         "*Workflow safely aborted.*"
                     )
-                    return {"messages": [AIMessage(content=abort_msg)], "is_aborted": True}
+                    return {
+                        "messages": [AIMessage(content=abort_msg)],
+                        "is_aborted": True,
+                        "latest_traceback_error": None,
+                        "execution_retry_count": retry_count,
+                    }
 
             # Valid read-only pass
             return {"latest_traceback_error": None, "intent_category": "workspace_read_only"}
@@ -1065,7 +1070,12 @@ def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:  
                 f"{retry_count} attempts.\n\n"
                 f"*Critic Feedback:* {eval_result}\n\n*Workflow safely aborted.*"
             )
-            return {"messages": [AIMessage(content=abort_msg)], "is_aborted": True}
+            return {
+                "messages": [AIMessage(content=abort_msg)],
+                "is_aborted": True,
+                "latest_traceback_error": None,
+                "execution_retry_count": retry_count,
+            }
 
         feedback = eval_result.replace("FAIL:", "").strip()
         msg = PromptManager.get("evaluation", "semantic_rejection", feedback=feedback).strip()
