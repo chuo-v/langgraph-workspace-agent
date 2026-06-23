@@ -70,7 +70,7 @@ allowed_paths:
 # ==========================================
 workspaces:
   langgraph-workspace-agent-dev:
-    description: "The core LangGraph orchestration architecture and webhook. This is the main development repository."
+    description: "The core LangGraph orchestration architecture and webhook. This is a development clone of the main langgraph-workspace-agent repository."
     path: "/Users/vernon/git/langgraph-workspace-agent-dev"
     target_branch: "develop"
     pre_commit_suites:
