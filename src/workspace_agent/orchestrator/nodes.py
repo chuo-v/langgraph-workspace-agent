@@ -41,6 +41,7 @@ from src.workspace_agent.tools.github import (
     open_pull_request,
     set_commit_status,
     sync_repository,
+    sync_to_commit,
     update_pull_request,
 )
 from src.workspace_agent.tools.registry import agent_tools, execute_tool_call
@@ -1107,44 +1108,30 @@ def force_tool_retry_node(state: AgentState) -> dict:
     }
 
 
-def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
-    """
-    Agentic CI/CD Execution Node.
-    Iterates through configured CI suites, executes them via OS-level subprocess isolation,
-    and natively reports status checks and log aggregations back to the GitHub Pull Request.
-    """
-    target_path = state.get("workspace_absolute_path")
-    commit_sha = state.get("commit_sha")
-    pr_number = state.get("pr_number")
-
-    if not target_path or not commit_sha or not pr_number:
-        # Skip if missing necessary GitHub webhook context
-        return {}
-
-    workspace_config = next(
-        (ws for ws in settings.workspaces.values() if ws.path == target_path), None
-    )
-
-    if not workspace_config or not workspace_config.ci_suites:
-        return {"ci_results": []}
-
-    expanded_target_path = os.path.expanduser(target_path)
-
+def _execute_ci_suites(
+    target_path: str,
+    expanded_target_path: str,
+    active_commit_sha: str,
+    ci_suites: list,
+    repo_full_name: str | None,
+) -> list[dict]:
+    """Helper to isolate CI subprocess executions and status reporting."""
     # 1. Post pending statuses for all suites upfront
-    for suite in workspace_config.ci_suites:
+    for suite in ci_suites:
         context_str = f"Agentic CI / {suite.name}"
         set_commit_status(
             directory=target_path,
-            commit_sha=commit_sha,
+            commit_sha=active_commit_sha,
             state="pending",
             context_str=context_str,
             description="Evaluation is running...",
+            repo_full_name=repo_full_name,
         )
 
     results = []
 
     # 2. Execute each suite strictly sequentially
-    for suite in workspace_config.ci_suites:
+    for suite in ci_suites:
         context_str = f"Agentic CI / {suite.name}"
         try:
             process = subprocess.run(
@@ -1162,10 +1149,11 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
 
             set_commit_status(
                 directory=target_path,
-                commit_sha=commit_sha,
+                commit_sha=active_commit_sha,
                 state="success" if passed else "failure",
                 context_str=context_str,
                 description="Evaluation passed" if passed else "Evaluation failed",
+                repo_full_name=repo_full_name,
             )
 
             results.append({"name": suite.name, "passed": passed, "logs": logs})
@@ -1184,58 +1172,139 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
 
             logs = (
                 f"{stdout_str}\n{stderr_str}\n\n"
-                f"[ERROR: TimeoutExpired] Command timed out after {suite.timeout_seconds} seconds."
+                f"[ERROR: TimeoutExpired] Command timed out after "
+                f"{suite.timeout_seconds} seconds."
             ).strip()
 
             set_commit_status(
                 directory=target_path,
-                commit_sha=commit_sha,
+                commit_sha=active_commit_sha,
                 state="failure",
                 context_str=context_str,
                 description="Execution timed out",
+                repo_full_name=repo_full_name,
             )
 
             results.append({"name": suite.name, "passed": False, "logs": logs})
         except Exception as e:
             set_commit_status(
                 directory=target_path,
-                commit_sha=commit_sha,
+                commit_sha=active_commit_sha,
                 state="error",
                 context_str=context_str,
                 description="OS error during execution",
+                repo_full_name=repo_full_name,
             )
             results.append({"name": suite.name, "passed": False, "logs": f"OS Error: {str(e)}"})
 
-    # 3. Post Consolidated PR Comment
-    if results:
-        summary_table = "| Suite | Status |\n|---|---|\n"
-        for r in results:
-            status_icon = "✅ Pass" if r["passed"] else "❌ Fail"
-            summary_table += f"| {r['name']} | {status_icon} |\n"
+    return results
 
-        details_sections = ""
-        for r in results:
-            safe_logs = (
-                r["logs"][:MAX_GITHUB_COMMENT_LENGTH] + "\n...[TRUNCATED]"
-                if len(r["logs"]) > MAX_GITHUB_COMMENT_LENGTH
-                else r["logs"]
+
+def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
+    """
+    Agentic CI/CD Execution Node.
+    Iterates through configured CI suites, executes them via OS-level subprocess isolation,
+    and natively reports status checks and log aggregations back to the GitHub Pull Request.
+    """
+    target_path = state.get("workspace_absolute_path")
+    repo_full_name = state.get("repo_full_name")
+    commit_sha = state.get("commit_sha")
+    pr_number = state.get("pr_number")
+    target_branch = state.get("target_branch", "main")
+
+    # We must at least have the path and PR number to proceed.
+    # (commit_sha might be missing on ChatOps triggers, we will fetch it dynamically)
+    if not target_path or not pr_number:
+        return {}
+
+    workspace_config = next(
+        (ws for ws in settings.workspaces.values() if ws.path == target_path), None
+    )
+
+    if not workspace_config or not workspace_config.ci_suites:
+        print(
+            f"Warning: Agentic CI skipped. No 'ci_suites' found in config for {target_path}",
+            flush=True,
+        )
+        return {"ci_results": []}
+
+    expanded_target_path = os.path.expanduser(target_path)
+
+    # 0. Sync workspace to the exact PR commit safely before running tests
+    sync_res = json.loads(
+        sync_to_commit(expanded_target_path, commit_sha=commit_sha, pr_number=pr_number)
+    )
+    if sync_res.get("status") == "error":
+        print(f"Agentic CI sync error: {sync_res}", flush=True)
+        if commit_sha:
+            set_commit_status(
+                directory=target_path,
+                commit_sha=commit_sha,
+                state="error",
+                context_str="Agentic CI / Setup",
+                description="Failed to checkout PR branch for testing.",
+                repo_full_name=repo_full_name,
             )
+        return {"ci_results": []}
 
-            details_sections += (
-                f"\n<details><summary>Logs: {r['name']}</summary>\n\n"
-                f"```text\n{safe_logs}\n```\n</details>\n"
-            )
+    active_commit_sha = sync_res.get("commit")
 
-        raw_prefix = settings.agent.agent_prefix or ""
-        prefix_str = f"{raw_prefix} " if raw_prefix and not raw_prefix.endswith(" ") else raw_prefix
-
-        comment_body = (
-            f"## {prefix_str}Agentic CI/CD Results\n\n{summary_table}\n{details_sections}"
+    try:
+        # Execute all suites cleanly using the helper
+        results = _execute_ci_suites(
+            target_path=target_path,
+            expanded_target_path=expanded_target_path,
+            active_commit_sha=active_commit_sha,
+            ci_suites=workspace_config.ci_suites,
+            repo_full_name=repo_full_name,
         )
 
-        comment_on_pull_request(directory=target_path, pr_number=pr_number, body=comment_body)
+        # 3. Post Consolidated PR Comment
+        if results:
+            summary_table = "| Suite | Status |\n|---|---|\n"
+            for r in results:
+                status_icon = "✅ Pass" if r["passed"] else "❌ Fail"
+                summary_table += f"| {r['name']} | {status_icon} |\n"
 
-    return {"ci_results": results}
+            details_sections = ""
+            for r in results:
+                safe_logs = (
+                    r["logs"][:MAX_GITHUB_COMMENT_LENGTH] + "\n...[TRUNCATED]"
+                    if len(r["logs"]) > MAX_GITHUB_COMMENT_LENGTH
+                    else r["logs"]
+                )
+
+                details_sections += (
+                    f"\n<details><summary>Logs: {r['name']}</summary>\n\n"
+                    f"```text\n{safe_logs}\n```\n</details>\n"
+                )
+
+            raw_prefix = settings.agent.agent_prefix or ""
+            prefix_str = (
+                f"{raw_prefix} " if raw_prefix and not raw_prefix.endswith(" ") else raw_prefix
+            )
+
+            comment_body = (
+                f"## {prefix_str}Agentic CI/CD Results\n\n{summary_table}\n{details_sections}"
+            )
+
+            comment_on_pull_request(
+                directory=target_path,
+                pr_number=pr_number,
+                body=comment_body,
+                repo_full_name=repo_full_name,
+            )
+
+        return {"ci_results": results}
+
+    finally:
+        # 4. Cleanup: Restore the repository to the target_branch
+        # Ensures the agent isn't left stranded in a detached HEAD state on a PR commit
+        try:
+            sync_repository(expanded_target_path, target_branch)
+        except Exception as e:
+            # Log non-fatal error but don't crash the workflow
+            print(f"Warning: Failed to restore branch after CI: {e}", flush=True)
 
 
 # ==========================================

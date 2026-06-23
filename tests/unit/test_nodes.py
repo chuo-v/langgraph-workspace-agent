@@ -1378,6 +1378,11 @@ def test_agentic_ci_node_success_all_pass(mocker):
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.settings.workspaces", {"test_ws": mock_workspace}
     )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.sync_to_commit",
+        return_value='{"status": "success", "commit": "sha123"}',
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
 
     # mock subprocess.run for both suites
     mock_process = mocker.Mock()
@@ -1422,8 +1427,8 @@ def test_agentic_ci_node_fallback_missing_context():
     """Edge Path: Ensure node bypasses execution if missing webhook context."""
     state = {
         "workspace_absolute_path": "/tmp/test",
-        "commit_sha": None,  # Missing context explicitly
-        "pr_number": 42,
+        "commit_sha": "sha123",
+        "pr_number": None,
     }
 
     result = agentic_ci_node(state)
@@ -1442,6 +1447,11 @@ def test_agentic_ci_node_error_timeout(mocker):
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.settings.workspaces", {"test_ws": mock_workspace}
     )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.sync_to_commit",
+        return_value='{"status": "success", "commit": "sha123"}',
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
 
     # Raise TimeoutExpired to simulate a hanging execution
     mocker.patch(

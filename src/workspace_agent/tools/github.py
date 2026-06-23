@@ -93,6 +93,92 @@ def sync_repository(directory: str, target_branch: str = "main") -> str:
         return json.dumps({"status": "error", "reason": "unexpected_error", "details": str(e)})
 
 
+def _perform_git_checkout(repo: Repo, commit_sha: str | None, pr_number: int | None) -> dict:
+    """Helper to isolate the git fetch and checkout branching logic."""
+    # 1. Prefer fetching via pr_number if available (universally safe for Forks)
+    if pr_number:
+        temp_branch = f"agent/ci-pr-{pr_number}"
+
+        # Use fully qualified refs and the force update flag (+)
+        # This guarantees Git won't crash if the local branch already exists
+        # and the new PR commit isn't a fast-forward.
+        repo.git.fetch("origin", f"+refs/pull/{pr_number}/head:refs/heads/{temp_branch}")
+
+        # If a specific SHA was provided, check it out.
+        # Otherwise, fallback to the PR head.
+        target_checkout = commit_sha if commit_sha else temp_branch
+        repo.git.checkout(target_checkout)
+
+        return {"status": "success", "commit": commit_sha or repo.head.commit.hexsha}
+
+    # 2. Fallback to origin fetch for triggers that lack a PR number
+    if commit_sha:
+        repo.git.fetch("origin")
+        repo.git.checkout(commit_sha)
+        return {"status": "success", "commit": commit_sha}
+
+    return {"status": "error", "reason": "missing_target"}
+
+
+def sync_to_commit(directory: str, commit_sha: str = None, pr_number: int = None) -> str:
+    """
+    Fetches from origin and checks out a specific commit or Pull Request safely.
+    Used primarily by the CI node to guarantee the tests run against the correct code.
+    """
+    if commit_sha and not re.match(r"^[0-9a-fA-F]+$", commit_sha):
+        return json.dumps({"status": "error", "reason": "invalid_commit_sha"})
+
+    try:
+        allowed = get_allowed_paths()
+        repo_path = secure_resolve_path(directory, allowed)
+        repo = Repo(repo_path)
+
+        token = os.getenv("GITHUB_TOKEN")
+        current_url = next(repo.remotes.origin.urls)
+        match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
+
+        error_reason = None
+        if not token:
+            error_reason = "missing_github_token"
+        elif not match:
+            error_reason = "invalid_github_url_format"
+
+        if error_reason:
+            return json.dumps({"status": "error", "reason": error_reason})
+
+        repo_full_name = match.group(1)
+
+        # Stash any dirty agent files to prevent accidental loss
+        if repo.is_dirty(untracked_files=True):
+            repo.git.stash(
+                "push",
+                "--include-untracked",
+                "-m",
+                "Auto-stashed by Workspace Agent before CI sync",
+            )
+
+        # Configure the environment to use the token to bypass SSH limits inside Docker
+        with repo.git.custom_environment(GIT_ASKPASS="echo", GIT_TOKEN=token):
+            authenticated_url = f"https://{token}@github.com/{repo_full_name}.git"
+            repo.remotes.origin.set_url(authenticated_url)
+
+            try:
+                res = _perform_git_checkout(repo, commit_sha, pr_number)
+            finally:
+                # Guarantee the URL is reset back to safe HTTPS even if the fetch fails
+                safe_url = f"https://github.com/{repo_full_name}.git"
+                repo.remotes.origin.set_url(safe_url)
+
+        return json.dumps(res)
+
+    except InvalidGitRepositoryError:
+        return json.dumps({"status": "error", "reason": "not_a_git_repository"})
+    except GitCommandError as e:
+        return json.dumps({"status": "error", "reason": "git_command_failed", "details": str(e)})
+    except Exception as e:
+        return json.dumps({"status": "error", "reason": "unexpected_error", "details": str(e)})
+
+
 def create_branch_and_commit(directory: str, new_branch: str, commit_message: str) -> str:
     """
     Creates a new branch, stages all changes, commits, and pushes to origin.
@@ -162,7 +248,12 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
 
 
 def open_pull_request(
-    directory: str, title: str, head_branch: str, base_branch: str = "main", body: str = ""
+    directory: str,
+    title: str,
+    head_branch: str,
+    base_branch: str = "main",
+    body: str = "",
+    repo_full_name: str = None,
 ) -> str:
     """
     Opens a Pull Request via the GitHub REST API using the GITHUB_TOKEN environment variable.
@@ -176,11 +267,11 @@ def open_pull_request(
     if not token:
         return json.dumps({"status": "error", "reason": "missing_github_token"})
 
-    repo_full_name = _get_repo_full_name(directory)
-    if not repo_full_name:
+    repo_name = repo_full_name or _get_repo_full_name(directory)
+    if not repo_name:
         return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
-    url = f"https://api.github.com/repos/{repo_full_name}/pulls"
+    url = f"https://api.github.com/repos/{repo_name}/pulls"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -210,7 +301,9 @@ def open_pull_request(
         return json.dumps({"status": "error", "reason": "unexpected_error", "details": str(e)})
 
 
-def update_pull_request(directory: str, pr_number: int, title: str = None, body: str = None) -> str:
+def update_pull_request(
+    directory: str, pr_number: int, title: str = None, body: str = None, repo_full_name: str = None
+) -> str:
     """
     Updates the title and/or body of an existing GitHub Pull Request.
     """
@@ -220,11 +313,11 @@ def update_pull_request(directory: str, pr_number: int, title: str = None, body:
             {"status": "error", "reason": "Missing GITHUB_TOKEN environment variable."}
         )
 
-    repo_full_name = _get_repo_full_name(directory)
-    if not repo_full_name:
+    repo_name = repo_full_name or _get_repo_full_name(directory)
+    if not repo_name:
         return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
-    url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}"
+    url = f"https://api.github.com/repos/{repo_name}/pulls/{pr_number}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -340,7 +433,9 @@ def get_git_diff_blueprint(directory: str, target_branch: str = None) -> str:
         return f"Error retrieving git blueprint: {e}"
 
 
-def comment_on_pull_request(directory: str, pr_number: int, body: str) -> str:
+def comment_on_pull_request(
+    directory: str, pr_number: int, body: str, repo_full_name: str = None
+) -> str:
     """
     Posts a Markdown comment on an existing GitHub Pull Request.
     """
@@ -348,12 +443,12 @@ def comment_on_pull_request(directory: str, pr_number: int, body: str) -> str:
     if not token:
         return json.dumps({"status": "error", "reason": "missing_github_token"})
 
-    repo_full_name = _get_repo_full_name(directory)
-    if not repo_full_name:
+    repo_name = repo_full_name or _get_repo_full_name(directory)
+    if not repo_name:
         return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
     # PR comments use the issues endpoint in the GitHub REST API
-    url = f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments"
+    url = f"https://api.github.com/repos/{repo_name}/issues/{pr_number}/comments"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -383,7 +478,12 @@ def comment_on_pull_request(directory: str, pr_number: int, body: str) -> str:
 
 
 def set_commit_status(
-    directory: str, commit_sha: str, state: str, context_str: str, description: str = ""
+    directory: str,
+    commit_sha: str,
+    state: str,
+    context_str: str,
+    description: str = "",
+    repo_full_name: str = None,
 ) -> str:
     """
     Sets the CI status (pending, success, error, failure) of a commit via the GitHub REST API.
@@ -392,11 +492,11 @@ def set_commit_status(
     if not token:
         return json.dumps({"status": "error", "reason": "missing_github_token"})
 
-    repo_full_name = _get_repo_full_name(directory)
-    if not repo_full_name:
+    repo_name = repo_full_name or _get_repo_full_name(directory)
+    if not repo_name:
         return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
-    url = f"https://api.github.com/repos/{repo_full_name}/statuses/{commit_sha}"
+    url = f"https://api.github.com/repos/{repo_name}/statuses/{commit_sha}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
