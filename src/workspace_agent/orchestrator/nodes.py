@@ -480,14 +480,40 @@ def _resolve_execution_tier(state: AgentState) -> int:
 
 
 def _extract_modified_tex_files(current_files: list[str], response: AIMessage) -> list[str]:
-    """Helper to trap newly modified .tex files from tool calls."""
+    """
+    Helper to trap newly modified .tex files from tool calls and clean up deleted/renamed paths.
+    """
     new_files = list(current_files)
     if getattr(response, "tool_calls", None):
         for tc in response.tool_calls:
-            if tc.get("name") in ["write_file", "search_and_replace", "replace_text_block"]:
-                fpath = str(tc.get("args", {}).get("file_path", ""))
+            tool_name = tc.get("name")
+            args = tc.get("args", {})
+
+            # 1. Handle file modifications/creations
+            if tool_name in ["write_file", "search_and_replace", "replace_text_block"]:
+                fpath = str(args.get("file_path", ""))
                 if fpath.lower().endswith(".tex") and fpath not in new_files:
                     new_files.append(fpath)
+
+            # 2. Handle file deletions
+            elif tool_name == "delete_file":
+                fpath = str(args.get("file_path", ""))
+                if fpath in new_files:
+                    new_files.remove(fpath)
+
+            # 3. Handle file renames
+            elif tool_name == "rename_file":
+                source_path = str(args.get("source_path", ""))
+                dest_path = str(args.get("destination_path", ""))
+
+                # Remove the old path if it was queued
+                if source_path in new_files:
+                    new_files.remove(source_path)
+
+                # Add the new path if it is a .tex file
+                if dest_path.lower().endswith(".tex") and dest_path not in new_files:
+                    new_files.append(dest_path)
+
     return new_files
 
 
