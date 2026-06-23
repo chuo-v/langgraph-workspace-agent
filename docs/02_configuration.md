@@ -61,17 +61,18 @@ llm:
 # FILESYSTEM SANDBOX
 # ==========================================
 allowed_paths:
-  - "/Users/vernon/git/langgraph-workspace-agent"
+  - "/Users/vernon/git/langgraph-workspace-agent-dev"
   - "/Users/vernon/git/langgraph-workspace-agent-deployment"
-  - "/Users/vernon/git/langgraph-workspace-agent-test-arena"
+  - "/Users/vernon/git/langgraph-workspace-agent-sandbox"
 
 # ==========================================
 # WORKSPACE MAPPINGS
 # ==========================================
 workspaces:
-  langgraph_workspace_agent:
-    description: "The core LangGraph orchestration architecture and webhook."
-    path: "/Users/vernon/git/langgraph-workspace-agent"
+  langgraph-workspace-agent-dev:
+    description: "The core LangGraph orchestration architecture and webhook. This is a development clone of the main langgraph-workspace-agent repository."
+    path: "/Users/vernon/git/langgraph-workspace-agent-dev"
+    target_branch: "develop"
     pre_commit_suites:
       - name: "Ruff Format"
         command: "docker run --rm -v $(pwd):/app -w /app ghcr.io/astral-sh/ruff:latest format ."
@@ -79,20 +80,35 @@ workspaces:
       - name: "Ruff Check & Fix"
         command: "docker run --rm -v $(pwd):/app -w /app ghcr.io/astral-sh/ruff:latest check --fix"
         timeout_seconds: 45
+    ci_suites:
+      - name: "NLU Component Evaluator"
+        command: "python -m tests.evals.run_router_evals --eval"
+        timeout_seconds: 120
+      - name: "E2E Pipeline Evaluator"
+        command: "python -m tests.evals.run_e2e_evals --eval"
+        timeout_seconds: 600
 
-  langgraph_workspace_agent_deployment:
+  langgraph-workspace-agent-deployment:
     description: "The private GitOps deployment repository for the workspace agent's live configuration and secrets."
     path: "/Users/vernon/git/langgraph-workspace-agent-deployment"
 
-  langgraph_workspace_agent_test_arena:
+  langgraph-workspace-agent-sandbox:
     description: "A dedicated private sandbox for functional testing and validating agent capabilities across file editing, GitOps workflows, and sandboxed script execution."
-    path: "/Users/vernon/git/langgraph-workspace-agent-test-arena"
+    path: "/Users/vernon/git/langgraph-workspace-agent-sandbox"
+    target_branch: "develop"
+    pre_commit_suites:
+      - name: "Ruff Format"
+        command: "docker run --rm -v $(pwd):/app -w /app ghcr.io/astral-sh/ruff:latest format ."
+        timeout_seconds: 30
+      - name: "Ruff Check & Fix"
+        command: "docker run --rm -v $(pwd):/app -w /app ghcr.io/astral-sh/ruff:latest check --fix"
+        timeout_seconds: 45
     ci_suites:
-      - name: "Dummy Data Processor Tests"
-        command: "python tests/run_dummy_tests.py"
+      - name: "Data Processor Unit Tests"
+        command: "python tests/test_data_processor.py"
         timeout_seconds: 120
-      - name: "LaTeX Document Build"
-        command: "python tests/run_latex_tests.py"
+      - name: "Documentation Validation"
+        command: "python tests/test_documentation.py"
         timeout_seconds: 120
 ```
 
