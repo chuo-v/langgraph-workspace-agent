@@ -48,7 +48,7 @@ class MockWorkspaceTracker:
                 git_config.set_value("user", "email", "bot@agent.local")
 
             # Ensure at least one commit exists so diffs against HEAD don't crash
-            readme_path = os.path.join(temp_path, "TEST_ARENA_README.md")
+            readme_path = os.path.join(temp_path, "SANDBOX_README.md")
             if not os.path.exists(readme_path):
                 with open(readme_path, "w") as f:
                     f.write(f"# Ephemeral Sandbox for {ws_name}")

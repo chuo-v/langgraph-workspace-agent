@@ -1,9 +1,9 @@
 [
   {
-    "input": "/standard Update config/toggle_settings.yaml in mcp_agent_test_arena to change both \"environment\" and \"log_level\" to \"staging-2\"",
+    "input": "/standard Update config/toggle_settings.yaml in langgraph-workspace-agent-sandbox to change both \"environment\" and \"log_level\" to \"staging-2\"",
     "expected_output": {
       "intent_category": "workspace_operation",
-      "inferred_workspace": "mcp_agent_test_arena",
+      "inferred_workspace": "langgraph-workspace-agent-sandbox",
       "clarification_question": null
     }
   },
@@ -11,7 +11,7 @@
     "input": "/standard Generate an env.yaml template with placeholder host API keys for the langgraph-workspace-agent-deployment.",
     "expected_output": {
       "intent_category": "workspace_operation",
-      "inferred_workspace": "langgraph_workspace_agent_deployment",
+      "inferred_workspace": "langgraph-workspace-agent-deployment",
       "clarification_question": null
     }
   },
