@@ -72,6 +72,10 @@ ignore = []
 # ensure imports are sorted and grouped logically
 known-first-party = ["src"]
 
+[tool.ruff.lint.pylint]
+# Global override to allow up to 8 arguments per function definition
+max-args = 8
+
 [tool.ruff.format]
 # standardize on double quotes and consistent indentation
 quote-style = "double"
