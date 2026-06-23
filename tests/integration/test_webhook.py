@@ -241,6 +241,183 @@ def test_webhook_error_missing_secret_token(setup_env):
 
 
 # ==========================================
+# Workflow: Telegram Webhook Attachments
+# ==========================================
+
+
+def _mock_telegram_file_download(mocker, is_ok=True, content=b"dummy content"):
+    """Helper to mock the two-step httpx.AsyncClient process for Telegram file downloads."""
+    # 1. Mock the getFile JSON response
+    mock_info_resp = mocker.Mock()
+    mock_info_resp.json.return_value = {"ok": is_ok, "result": {"file_path": "dummy/path.txt"}}
+
+    # 2. Mock the actual binary file download response
+    mock_download_resp = mocker.Mock()
+    mock_download_resp.raise_for_status = mocker.Mock()
+    mock_download_resp.content = content
+
+    # Route the mock depending on which URL is being requested
+    async def mock_get(url, *args, **kwargs):
+        if "getFile" in str(url):
+            return mock_info_resp
+        return mock_download_resp
+
+    mock_client = mocker.AsyncMock()
+    mock_client.get.side_effect = mock_get
+
+    # Wrap in an async context manager mock since we use `async with httpx.AsyncClient()...`
+    mock_context_manager = mocker.MagicMock()
+    mock_context_manager.__aenter__.return_value = mock_client
+
+    mocker.patch("src.workspace_agent.main.httpx.AsyncClient", return_value=mock_context_manager)
+
+
+def test_webhook_success_telegram_attachment_text(setup_env, mocker):
+    """Green Path: Verifies standard text files are successfully downloaded and parsed."""
+    mock_process = mocker.patch("src.workspace_agent.main.process_agent_message")
+    _mock_telegram_file_download(mocker, content=b"print('hello world')")
+
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "test_secret_123"}
+    payload = {
+        "message": {
+            "chat": {"id": 999888777},
+            "text": "Review this script",
+            "document": {"file_id": "file123", "file_name": "script.py"},
+        }
+    }
+
+    response = client.post("/webhook", headers=headers, json=payload)
+    assert response.status_code == 200
+
+    # Verify the instruction successfully merged the text and file content
+    args, _ = mock_process.call_args
+    final_instruction = args[1]
+    assert "Review this script" in final_instruction
+    assert "--- Contents of script.py ---" in final_instruction
+    assert "print('hello world')" in final_instruction
+
+
+def test_webhook_success_telegram_attachment_pdf(setup_env, mocker):
+    """Green Path: Verifies PDFs trigger the PyPDF reader integration."""
+    mock_process = mocker.patch("src.workspace_agent.main.process_agent_message")
+    _mock_telegram_file_download(mocker, content=b"dummy binary pdf data")
+
+    # Mock the PdfReader to avoid needing a valid binary PDF in the test suite
+    mock_pdf_reader = mocker.patch("src.workspace_agent.main.PdfReader")
+    mock_page = mocker.Mock()
+    mock_page.extract_text.return_value = "Extracted PDF text."
+    mock_pdf_reader.return_value.pages = [mock_page]
+
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "test_secret_123"}
+    payload = {
+        "message": {
+            "chat": {"id": 999888777},
+            "text": "Summarize this paper",
+            "document": {"file_id": "file123", "file_name": "research.pdf"},
+        }
+    }
+
+    client.post("/webhook", headers=headers, json=payload)
+
+    args, _ = mock_process.call_args
+    final_instruction = args[1]
+    assert "Summarize this paper" in final_instruction
+    assert "Extracted PDF text." in final_instruction
+
+
+def test_webhook_success_caption_fallback(setup_env, mocker):
+    """Green Path: Verifies Telegram's quirk of sending 'caption' instead of 'text' for files."""
+    mock_process = mocker.patch("src.workspace_agent.main.process_agent_message")
+    _mock_telegram_file_download(mocker, content=b"content here")
+
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "test_secret_123"}
+    payload = {
+        "message": {
+            "chat": {"id": 999888777},
+            # Notice the ABSENCE of a "text" key
+            "caption": "Please review this",
+            "document": {"file_id": "file123", "file_name": "script.py"},
+        }
+    }
+
+    client.post("/webhook", headers=headers, json=payload)
+
+    args, _ = mock_process.call_args
+    final_instruction = args[1]
+    assert "Please review this" in final_instruction
+    assert "content here" in final_instruction
+
+
+def test_webhook_fallback_unsupported_binary(setup_env, mocker):
+    """
+    Edge Path: Verifies unsupported true binaries (like .zip) are caught and gracefully rejected.
+    """
+    mock_process = mocker.patch("src.workspace_agent.main.process_agent_message")
+
+    # Create bytes that will purposefully fail utf-8 decoding (e.g., 0xFF 0xFE)
+    _mock_telegram_file_download(mocker, content=b"\xff\xfe\x00\x00")
+
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "test_secret_123"}
+    payload = {
+        "message": {
+            "chat": {"id": 999888777},
+            "text": "Extract this",
+            "document": {"file_id": "file123", "file_name": "archive.zip"},
+        }
+    }
+
+    client.post("/webhook", headers=headers, json=payload)
+
+    args, _ = mock_process.call_args
+    final_instruction = args[1]
+    assert "format is not currently supported for text extraction" in final_instruction
+
+
+def test_webhook_fallback_file_too_large(setup_env, mocker):
+    """Edge Path: Verifies the 20MB bot limit API failure does not crash the gateway."""
+    mock_process = mocker.patch("src.workspace_agent.main.process_agent_message")
+
+    # Mock getFile returning False (which happens when file > 20MB)
+    _mock_telegram_file_download(mocker, is_ok=False)
+
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "test_secret_123"}
+    payload = {
+        "message": {
+            "chat": {"id": 999888777},
+            "text": "Analyze this video",
+            "document": {"file_id": "file123", "file_name": "movie.mp4"},
+        }
+    }
+
+    client.post("/webhook", headers=headers, json=payload)
+
+    args, _ = mock_process.call_args
+    final_instruction = args[1]
+    assert "exceeding Telegram's 20MB bot download limit" in final_instruction
+
+
+def test_webhook_fallback_photo_attachment(setup_env, mocker):
+    """Edge Path: Verifies compressed images sent via 'photo' are caught and rejected cleanly."""
+    mock_process = mocker.patch("src.workspace_agent.main.process_agent_message")
+
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "test_secret_123"}
+    payload = {
+        "message": {
+            "chat": {"id": 999888777},
+            "caption": "Look at this error",
+            "photo": [{"file_id": "photo123"}],  # Photo instead of document
+        }
+    }
+
+    client.post("/webhook", headers=headers, json=payload)
+
+    args, _ = mock_process.call_args
+    final_instruction = args[1]
+    assert "Look at this error" in final_instruction
+    assert "Images are not currently supported" in final_instruction
+
+
+# ==========================================
 # Workflow: LangGraph Integration (process_agent_message)
 # ==========================================
 

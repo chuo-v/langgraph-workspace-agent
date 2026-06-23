@@ -2,6 +2,7 @@ import json
 import os
 
 import redis
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.redis import RedisSaver
 from langgraph.graph import END, StateGraph
@@ -99,8 +100,28 @@ workflow.add_node("human_pr_node", nodes.human_node)
 workflow.add_node("pr_merged", nodes.pr_merged_node)
 workflow.add_node("force_tool_retry", nodes.force_tool_retry_node)
 
+
 # Inject the Sub-Graph as a standard functional node
-workflow.add_node("pull_request_subgraph", pr_app)
+def pull_request_subgraph_node(state: AgentState, config: RunnableConfig) -> dict:
+    """Explicitly maps the subgraph's terminal state flags back to the parent AgentState."""
+    result = pr_app.invoke(state, config)
+    return {
+        # Relies on LangGraph's add_messages reducer to deduplicate by ID
+        "messages": result.get("messages", []),
+        "is_aborted": result.get("is_aborted", False),
+        "latest_traceback_error": result.get("latest_traceback_error"),
+        "execution_retry_count": result.get(
+            "execution_retry_count", state.get("execution_retry_count", 0)
+        ),
+        "active_agent_branch": result.get("active_agent_branch"),
+        "pending_pr_url": result.get("pending_pr_url"),
+        "human_approved": result.get("human_approved", False),
+        "intent_category": result.get("intent_category"),
+        "modified_tex_files": result.get("modified_tex_files", []),
+    }
+
+
+workflow.add_node("pull_request_subgraph", pull_request_subgraph_node)
 
 
 # ==========================================

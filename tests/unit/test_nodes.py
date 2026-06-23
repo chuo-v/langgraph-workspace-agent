@@ -288,6 +288,54 @@ def test_extract_modified_tex_files_success_extraction():
     assert "/src/main.py" not in new_files
 
 
+def test_extract_modified_tex_files_success_deletion():
+    """Green Path: Validates that deleted LaTeX files are removed from the compilation queue."""
+    mock_response = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "delete_file", "args": {"file_path": "/src/report.tex"}, "id": "1"},
+        ],
+    )
+
+    new_files = _extract_modified_tex_files(["/src/report.tex", "/src/keep.tex"], mock_response)
+
+    assert "/src/report.tex" not in new_files
+    assert "/src/keep.tex" in new_files
+
+
+def test_extract_modified_tex_files_success_rename():
+    """Green Path: Validates that renamed LaTeX files update the queue correctly."""
+    mock_response = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "rename_file",
+                "args": {"source_path": "/src/old.tex", "destination_path": "/src/new.tex"},
+                "id": "1",
+            },
+            {
+                "name": "rename_file",
+                "args": {
+                    "source_path": "/src/ignore.txt",
+                    "destination_path": "/src/ignore_new.txt",
+                },
+                "id": "2",
+            },
+        ],
+    )
+
+    new_files = _extract_modified_tex_files(["/src/old.tex", "/src/other.tex"], mock_response)
+
+    # old.tex should be removed
+    assert "/src/old.tex" not in new_files
+    # new.tex should be added
+    assert "/src/new.tex" in new_files
+    # other.tex should remain untouched
+    assert "/src/other.tex" in new_files
+    # .txt files should be ignored completely
+    assert "/src/ignore_new.txt" not in new_files
+
+
 # ==========================================
 # Component: _filter_execution_context
 # ==========================================
@@ -1280,6 +1328,8 @@ def test_evaluate_diff_node_error_fail_max_retries(mocker):
     result = evaluate_diff_node(state)
 
     assert result.get("is_aborted") is True
+    assert result.get("latest_traceback_error") is None
+    assert result.get("execution_retry_count") == 3
     assert "Execution Failed" in result["messages"][0].content
     assert "Still wrong" in result["messages"][0].content
 
@@ -1302,6 +1352,8 @@ def test_evaluate_diff_node_error_hallucination_trap_aborted(mocker):
     result = evaluate_diff_node(state)
 
     assert result.get("is_aborted") is True
+    assert result.get("latest_traceback_error") is None
+    assert result.get("execution_retry_count") == 3
     assert "Execution Failed" in result["messages"][0].content
 
 

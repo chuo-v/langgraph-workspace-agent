@@ -54,7 +54,7 @@
       {
         "step": 1,
         "input_type": "human_message",
-        "input": "/standard Draft a file named E2E_MOCK_README.md for the mcp-agent-test-arena repo.",
+        "input": "/standard Draft a file named E2E_MOCK_README.md for the langgraph-workspace-agent-sandbox repo.",
         "expected_interrupt": "human_pr_node",
         "expected_state": {
           "pending_pr_url": "__NOT_NULL__"
@@ -86,7 +86,7 @@
       {
         "step": 1,
         "input_type": "human_message",
-        "input": "/standard Create the file TEST_ARENA_README.md in the mcp-agent-test-arena repo. If you find that the file already exists, do not modify it and explicitly mark the task as already completed.",
+        "input": "/standard Create the file SANDBOX_README.md in the langgraph-workspace-agent-sandbox repo. If you find that the file already exists, do not modify it and explicitly mark the task as already completed.",
         "expected_interrupt": null,
         "expected_tool_calls": [
           "mark_task_already_completed"
@@ -94,6 +94,29 @@
         "expected_state": {
           "intent_category": "workspace_read_only",
           "pending_pr_url": null,
+          "is_aborted": false
+        }
+      }
+    ]
+  },
+  {
+    "case_id": "e2e_sandbox_self_correction",
+    "description": "Tests the agent's ability to execute a Python script, catch a traceback, self-correct the code, and successfully re-execute before opening a PR.",
+    "turns": [
+      {
+        "step": 1,
+        "input_type": "human_message",
+        "input": "/standard In the langgraph-workspace-agent-sandbox repo, execute the python script (calculator.py). It currently crashes with a ZeroDivisionError. Please run the script, read the traceback, and use the `write_file` tool (using the absolute workspace path) to overwrite the file so the `divide` function safely handles division by zero by returning 0. Verify the script runs successfully, then open a PR.",
+        "expected_interrupt": "human_pr_node",
+        "expected_tool_calls": [
+          "run_python_script",
+          "write_file",
+          "run_python_script"
+        ],
+        "expected_state": {
+          "intent_category": "workspace_operation",
+          "pending_pr_url": "__NOT_NULL__",
+          "human_approved": false,
           "is_aborted": false
         }
       }
