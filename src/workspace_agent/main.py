@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 import secrets
@@ -13,6 +14,7 @@ from chromadb import PersistentClient
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from langchain_core.messages import HumanMessage
 from langfuse import Langfuse
+from pypdf import PdfReader
 from redis.exceptions import LockError
 
 from src.workspace_agent.core.config import settings
@@ -500,6 +502,76 @@ def process_agent_message(
 # ==========================================
 
 
+async def _process_telegram_attachment(document: dict, current_text: str) -> str:
+    """Helper to asynchronously download and parse Telegram file attachments."""
+    file_id = document.get("file_id")
+    file_name = document.get("file_name", "attached_file.txt").lower()
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+
+    if not bot_token:
+        return current_text
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            # 1. Ask Telegram for the file path
+            file_info_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}"
+            file_info_resp = await client.get(file_info_url)
+            file_info = file_info_resp.json()
+
+            if not file_info.get("ok"):
+                error_msg = (
+                    "\n\n[System Note: User attempted to attach a file, but it failed "
+                    "to download (likely exceeding Telegram's 20MB bot download limit).]"
+                )
+                return current_text + error_msg
+
+            file_path = file_info["result"]["file_path"]
+            download_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+
+            # 2. Download the RAW binary content using the same pooled client
+            response = await client.get(download_url)
+            response.raise_for_status()
+            file_bytes = response.content
+
+        # 3. Parse based on file type
+        extracted_text = ""
+
+        if file_name.endswith(".pdf"):
+            # Process as PDF in-memory
+            pdf_file = io.BytesIO(file_bytes)
+            reader = PdfReader(pdf_file)
+            extracted_text = "\n".join(
+                [page.extract_text() for page in reader.pages if page.extract_text()]
+            )
+        else:
+            # For all other files (including unknown extensions or extensionless files
+            # like 'Dockerfile'), attempt UTF-8 decoding.
+            try:
+                extracted_text = file_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                # Gracefully reject unsupported true binaries (images, videos, zips, etc.)
+                extracted_text = (
+                    f"[System Note: The user attached a file '{file_name}', but its "
+                    "format is not currently supported for text extraction.]"
+                )
+
+        # 4. Append the contents to the instruction
+        if extracted_text.strip():
+            attachment_context = f"\n\n--- Contents of {file_name} ---\n{extracted_text}\n---"
+            return current_text + attachment_context
+
+    except httpx.ReadTimeout:
+        logger.error(f"Timeout while downloading Telegram attachment {file_name}")
+        return (
+            current_text
+            + f"\n\n[System Note: Timed out while attempting to download the file '{file_name}'.]"
+        )
+    except Exception as e:
+        logger.error(f"Failed to download or parse Telegram attachment: {e}")
+
+    return current_text
+
+
 @app.post("/webhook")
 async def telegram_webhook(
     request: Request,
@@ -532,8 +604,26 @@ async def telegram_webhook(
         return {"status": "ignored"}
 
     chat_id = str(message.get("chat", {}).get("id", ""))
-    text = message.get("text", "").strip()
     expected_chat_id = os.getenv("AUTHORIZED_OWNER_CHAT_ID")
+
+    text = message.get("text", "").strip()
+    caption = message.get("caption", "").strip()
+
+    # If it's an attachment, Telegram uses 'caption' instead of 'text' for the prompt
+    if not text and caption:
+        text = caption
+
+    document = message.get("document")
+    photo = message.get("photo")
+
+    if document:
+        text = await _process_telegram_attachment(document, text)
+    elif photo:
+        warning_msg = (
+            "[System Note: Images are not currently supported, please send as a file/document.]"
+        )
+        # Append cleanly whether they included a caption or not
+        text = f"{text}\n\n{warning_msg}" if text else warning_msg
 
     # strict whitelisting
     if not chat_id or chat_id != expected_chat_id:
