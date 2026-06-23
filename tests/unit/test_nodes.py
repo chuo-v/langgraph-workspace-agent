@@ -1328,6 +1328,8 @@ def test_evaluate_diff_node_error_fail_max_retries(mocker):
     result = evaluate_diff_node(state)
 
     assert result.get("is_aborted") is True
+    assert result.get("latest_traceback_error") is None
+    assert result.get("execution_retry_count") == 3
     assert "Execution Failed" in result["messages"][0].content
     assert "Still wrong" in result["messages"][0].content
 
@@ -1350,6 +1352,8 @@ def test_evaluate_diff_node_error_hallucination_trap_aborted(mocker):
     result = evaluate_diff_node(state)
 
     assert result.get("is_aborted") is True
+    assert result.get("latest_traceback_error") is None
+    assert result.get("execution_retry_count") == 3
     assert "Execution Failed" in result["messages"][0].content
 
 
