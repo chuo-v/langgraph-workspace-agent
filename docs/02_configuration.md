@@ -61,7 +61,7 @@ llm:
 # FILESYSTEM SANDBOX
 # ==========================================
 allowed_paths:
-  - "/Users/vernon/git/langgraph-workspace-agent-copy"
+  - "/Users/vernon/git/langgraph-workspace-agent-dev"
   - "/Users/vernon/git/langgraph-workspace-agent-deployment"
   - "/Users/vernon/git/langgraph-workspace-agent-sandbox"
 
@@ -69,9 +69,9 @@ allowed_paths:
 # WORKSPACE MAPPINGS
 # ==========================================
 workspaces:
-  langgraph-workspace-agent-copy:
-    description: "The core LangGraph orchestration architecture and webhook. This is a development clone of the main langgraph-workspace-agent repository."
-    path: "/Users/vernon/git/langgraph-workspace-agent-copy"
+  langgraph-workspace-agent-dev:
+    description: "The core LangGraph orchestration architecture and webhook. This is the main development repository."
+    path: "/Users/vernon/git/langgraph-workspace-agent-dev"
     target_branch: "develop"
     pre_commit_suites:
       - name: "Ruff Format"
