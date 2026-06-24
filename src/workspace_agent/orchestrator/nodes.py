@@ -1793,8 +1793,12 @@ def update_memory_node(
         }
         store.put(namespace, "profile", updated_profile)
 
-        # mirror to disk for persistence across container restarts
-        profile_path = os.path.join(os.getcwd(), "user_profile.json")
+        # Mirror to disk for persistence across container restarts
+        default_profile_path = os.path.join(os.getcwd(), "agent_state", "user_profile.json")
+        profile_path = os.getenv("AGENT_PROFILE_PATH", default_profile_path)
+
+        os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+
         try:
             with open(profile_path, "w", encoding="utf-8") as f:
                 json.dump(updated_profile, f, indent=2)
