@@ -8,6 +8,19 @@ from git.exc import GitCommandError, InvalidGitRepositoryError
 
 from src.workspace_agent.tools.filesystem import get_allowed_paths, secure_resolve_path
 
+# ==========================================
+# Constants
+# ==========================================
+_GIT_CREDENTIAL_HELPER = (
+    '!f() { test "$1" = get && echo "username=x-access-token" '
+    '&& echo "password=$GITHUB_TOKEN"; }; f'
+)
+
+
+# ==========================================
+# Validation & Parsing Helpers
+# ==========================================
+
 
 def _sanitize_branch_name(branch_name: str | None) -> None:
     """Prevents Git Argument Injection by rejecting flags."""
@@ -68,20 +81,21 @@ def sync_repository(directory: str, target_branch: str = "main") -> str:
                 "push", "--include-untracked", "-m", "Auto-stashed by Workspace Agent before sync"
             )
 
-        repo_full_name = match.group(1)
+        # Suppress terminal prompts entirely, and use an inline credential helper guarded to only
+        # answer 'get' requests
+        with repo.git.custom_environment(
+            GITHUB_TOKEN=token, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="echo"
+        ):
+            c_flags = [
+                "-c",
+                "credential.helper=",
+                "-c",
+                f"credential.helper={_GIT_CREDENTIAL_HELPER}",
+            ]
+            git_bin = repo.git.GIT_PYTHON_GIT_EXECUTABLE
 
-        # configure the environment to use the token
-        with repo.git.custom_environment(GIT_ASKPASS="echo", GIT_TOKEN=token):
-            authenticated_url = f"https://{token}@github.com/{repo_full_name}.git"
-            repo.remotes.origin.set_url(authenticated_url)
-
-            try:
-                repo.git.checkout(target_branch)
-                repo.git.pull("--ff-only", "origin", target_branch)
-            finally:
-                # guarantee the URL is reset back to safe HTTPS even if the pull fails
-                safe_url = f"https://github.com/{repo_full_name}.git"
-                repo.remotes.origin.set_url(safe_url)
+            repo.git.checkout(target_branch)
+            repo.git.execute([git_bin] + c_flags + ["pull", "--ff-only", "origin", target_branch])
 
         return json.dumps({"status": "success", "branch": target_branch})
 
@@ -93,19 +107,22 @@ def sync_repository(directory: str, target_branch: str = "main") -> str:
         return json.dumps({"status": "error", "reason": "unexpected_error", "details": str(e)})
 
 
-def _perform_git_checkout(repo: Repo, commit_sha: str | None, pr_number: int | None) -> dict:
+def _perform_git_checkout(
+    repo: Repo, commit_sha: str | None, pr_number: int | None, c_flags: list
+) -> dict:
     """Helper to isolate the git fetch and checkout branching logic."""
+    git_bin = repo.git.GIT_PYTHON_GIT_EXECUTABLE
+
     # 1. Prefer fetching via pr_number if available (universally safe for Forks)
     if pr_number:
         temp_branch = f"agent/ci-pr-{pr_number}"
 
-        # Use fully qualified refs and the force update flag (+)
-        # This guarantees Git won't crash if the local branch already exists
-        # and the new PR commit isn't a fast-forward.
-        repo.git.fetch("origin", f"+refs/pull/{pr_number}/head:refs/heads/{temp_branch}")
+        repo.git.execute(
+            [git_bin]
+            + c_flags
+            + ["fetch", "origin", f"+refs/pull/{pr_number}/head:refs/heads/{temp_branch}"]
+        )
 
-        # If a specific SHA was provided, check it out.
-        # Otherwise, fallback to the PR head.
         target_checkout = commit_sha if commit_sha else temp_branch
         repo.git.checkout(target_checkout)
 
@@ -113,7 +130,7 @@ def _perform_git_checkout(repo: Repo, commit_sha: str | None, pr_number: int | N
 
     # 2. Fallback to origin fetch for triggers that lack a PR number
     if commit_sha:
-        repo.git.fetch("origin")
+        repo.git.execute([git_bin] + c_flags + ["fetch", "origin"])
         repo.git.checkout(commit_sha)
         return {"status": "success", "commit": commit_sha}
 
@@ -146,8 +163,6 @@ def sync_to_commit(directory: str, commit_sha: str = None, pr_number: int = None
         if error_reason:
             return json.dumps({"status": "error", "reason": error_reason})
 
-        repo_full_name = match.group(1)
-
         # Stash any dirty agent files to prevent accidental loss
         if repo.is_dirty(untracked_files=True):
             repo.git.stash(
@@ -157,17 +172,17 @@ def sync_to_commit(directory: str, commit_sha: str = None, pr_number: int = None
                 "Auto-stashed by Workspace Agent before CI sync",
             )
 
-        # Configure the environment to use the token to bypass SSH limits inside Docker
-        with repo.git.custom_environment(GIT_ASKPASS="echo", GIT_TOKEN=token):
-            authenticated_url = f"https://{token}@github.com/{repo_full_name}.git"
-            repo.remotes.origin.set_url(authenticated_url)
+        with repo.git.custom_environment(
+            GITHUB_TOKEN=token, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="echo"
+        ):
+            c_flags = [
+                "-c",
+                "credential.helper=",
+                "-c",
+                f"credential.helper={_GIT_CREDENTIAL_HELPER}",
+            ]
 
-            try:
-                res = _perform_git_checkout(repo, commit_sha, pr_number)
-            finally:
-                # Guarantee the URL is reset back to safe HTTPS even if the fetch fails
-                safe_url = f"https://github.com/{repo_full_name}.git"
-                repo.remotes.origin.set_url(safe_url)
+            res = _perform_git_checkout(repo, commit_sha, pr_number, c_flags)
 
         return json.dumps(res)
 
@@ -200,7 +215,6 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
         match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
         if not match:
             return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
-        repo_full_name = match.group(1)
 
         original_branch = repo.active_branch.name
 
@@ -226,18 +240,22 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
         # commit the changes
         repo.index.commit(commit_message)
 
-        # inject token and push
-        with repo.git.custom_environment(GIT_ASKPASS="echo", GIT_TOKEN=token):
-            authenticated_url = f"https://{token}@github.com/{repo_full_name}.git"
-            repo.remotes.origin.set_url(authenticated_url)
+        # Inject token dynamically and apply configuration directly to the push command
+        with repo.git.custom_environment(
+            GITHUB_TOKEN=token, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="echo"
+        ):
+            c_flags = [
+                "-c",
+                "credential.helper=",
+                "-c",
+                f"credential.helper={_GIT_CREDENTIAL_HELPER}",
+            ]
+            git_bin = repo.git.GIT_PYTHON_GIT_EXECUTABLE
 
-            try:
-                origin = repo.remote(name="origin")
-                repo.git.push("--set-upstream", origin, new_branch)
-            finally:
-                # guarantee the URL is scrubbed after pushing
-                safe_url = f"https://github.com/{repo_full_name}.git"
-                repo.remotes.origin.set_url(safe_url)
+            origin = repo.remote(name="origin")
+            repo.git.execute(
+                [git_bin] + c_flags + ["push", "--set-upstream", origin.name, new_branch]
+            )
 
         return json.dumps({"status": "success", "branch": new_branch, "message": commit_message})
 
