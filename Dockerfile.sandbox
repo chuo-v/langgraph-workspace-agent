@@ -1,12 +1,16 @@
 FROM python:3.11-slim
 
-# install LaTeX and build tools
+# install system dependencies (Git, LaTeX, and build tools)
 RUN apt-get update && apt-get install -y \
+    git \
     texlive-latex-base \
     texlive-fonts-recommended \
     texlive-latex-extra \
     latexmk \
     && rm -rf /var/lib/apt/lists/*
+
+# Install the testing framework required by the run_pytest tool
+RUN pip install --no-cache-dir pytest pytest-mock
 
 # set the working directory
 WORKDIR /workspace

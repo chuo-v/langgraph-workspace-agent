@@ -114,7 +114,7 @@ def run_python_script(script_path: str, config: RunnableConfig) -> str:
             working_dir="/workspace",
             detach=True,
             remove=False,  # Remove manually after grabbing the logs
-            network_mode="none",
+            network="sandbox_net",
             mem_limit="512m",
             nano_cpus=1000000000,
         )
@@ -169,7 +169,7 @@ def compile_latex_document(tex_file_path: str, config: RunnableConfig) -> str:
             working_dir="/workspace",
             detach=True,
             remove=False,
-            network_mode="none",
+            network="sandbox_net",
             mem_limit="512m",
             nano_cpus=1000000000,
         )
@@ -193,12 +193,48 @@ def compile_latex_document(tex_file_path: str, config: RunnableConfig) -> str:
         return f"Unexpected Error compiling LaTeX: {str(e)}"
 
 
+def _resolve_workspace_and_path(safe_path: Path) -> tuple[Path, str]:
+    """Helper to determine the strict workspace boundary and relative test path."""
+    workspace_root = None
+    for ws_config in settings.workspaces.values():
+        ws_path = Path(ws_config.path).resolve()
+        if safe_path.is_relative_to(ws_path):
+            # Use the longest (most specific) match in case of nested workspaces
+            if not workspace_root or len(ws_path.parts) > len(workspace_root.parts):
+                workspace_root = ws_path
+
+    # Fallback Boundary: tightly restrict the mount to its immediate parent
+    if not workspace_root:
+        return safe_path.parent, safe_path.name
+
+    return workspace_root, str(safe_path.relative_to(workspace_root))
+
+
+def _build_pytest_command(workspace_root: Path, rel_path: str) -> str:
+    """Helper to dynamically detect and build dependency setup and pytest commands."""
+    setup_cmds = []
+    if (workspace_root / "requirements.txt").exists():
+        setup_cmds.append("pip install --quiet -r requirements.txt")
+    if (workspace_root / "requirements-dev.txt").exists():
+        setup_cmds.append("pip install --quiet -r requirements-dev.txt")
+
+    # Fallback for standard Python packages if no requirements.txt exists
+    if not setup_cmds and (workspace_root / "pyproject.toml").exists():
+        setup_cmds.append("pip install --quiet .")
+
+    # Combine setup commands with the pytest execution
+    if setup_cmds:
+        chained_setup = " && ".join(setup_cmds)
+        return f"{chained_setup} && pytest {rel_path} -v --tb=short"
+
+    return f"pytest {rel_path} -v --tb=short"
+
+
 def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
     """
     Runs pytest on a specific test file or directory inside the Docker sandbox.
     Mounts the root of the workspace to ensure module imports resolve correctly.
     """
-
     try:
         allowed = get_allowed_paths()
         safe_path = secure_resolve_path(test_file_path, allowed)
@@ -206,46 +242,33 @@ def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
         if not safe_path.exists():
             return f"Error: Test path not found at {safe_path}"
 
-        # 1. Strict Boundary: Match against explicitly configured workspaces in config.yaml
-        workspace_root = None
-        for ws_config in settings.workspaces.values():
-            ws_path = Path(ws_config.path).resolve()
-            if safe_path.is_relative_to(ws_path):
-                # Use the longest (most specific) match in case of nested workspaces
-                if not workspace_root or len(ws_path.parts) > len(workspace_root.parts):
-                    workspace_root = ws_path
+        # 1. Resolve workspace boundaries and relative execution paths
+        workspace_root, rel_path = _resolve_workspace_and_path(safe_path)
 
-        # 2. Fallback Boundary: If it's a loose file outside configured workspaces
-        # but inside ALLOWED_PATHS, tightly restrict the mount to its immediate parent.
-        if not workspace_root:
-            workspace_root = safe_path.parent
-            rel_path = safe_path.name
-        else:
-            rel_path = str(safe_path.relative_to(workspace_root))
+        # 2. Build the exact bash command chaining pip installs and pytest
+        full_command = _build_pytest_command(workspace_root, rel_path)
 
         client = _get_docker_client(config)
 
-        # Get our dynamically masked volumes
+        # 3. Get our dynamically masked volumes
         secure_vols, secure_tmpfs = _get_secure_mounts(workspace_root)
 
-        # Spin up the ephemeral container
+        # 4. Spin up the ephemeral container
         container = client.containers.run(
             "agent-sandbox:latest",
-            # Use -v for verbose output and --tb=short to keep error logs from blowing up
-            # the context window
-            command=["pytest", rel_path, "-v", "--tb=short"],
+            command=["/bin/bash", "-c", full_command],
             volumes=secure_vols,
             tmpfs=secure_tmpfs,
             working_dir="/workspace",
             detach=True,
             remove=False,
-            network_mode="none",
+            network="sandbox_net",
             mem_limit="512m",
             nano_cpus=1000000000,
         )
 
-        # Wait for execution to finish (tests can take longer, so 60s timeout)
-        result = container.wait(timeout=60)
+        # Wait for execution to finish
+        result = container.wait(timeout=180)
         logs = container.logs(stdout=True, stderr=True).decode("utf-8")
 
         # Prevent context blowout

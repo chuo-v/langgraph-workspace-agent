@@ -183,8 +183,52 @@ services:
     depends_on:
       - gateway
 
+  sandbox-firewall:
+    image: docker:cli
+    container_name: workspace_agent_firewall
+    privileged: true
+    network_mode: host
+    volumes:
+      # Required to manage networks and inspect the sandbox_net ID dynamically
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: >
+      /bin/sh -c "
+      apk add --no-cache iptables &&
+
+      # 1. Force create the network if Docker Compose ignored it
+      if ! docker network inspect sandbox_net >/dev/null 2>&1; then
+        echo 'sandbox_net not found. Creating it manually...' &&
+        docker network create --driver bridge sandbox_net;
+      fi &&
+
+      # 2. Get the bridge ID
+      NETWORK_ID=$$(docker network inspect sandbox_net -f '{{.Id}}' | cut -c 1-12) &&
+      BR_NAME=\"br-$$NETWORK_ID\" &&
+      echo \"Applying internal airgap to $$BR_NAME...\" &&
+
+      # 3. Flush existing rules for idempotency
+      iptables -D DOCKER-USER -i $$BR_NAME -d 10.0.0.0/8 -j DROP 2>/dev/null || true &&
+      iptables -D DOCKER-USER -i $$BR_NAME -d 172.16.0.0/12 -j DROP 2>/dev/null || true &&
+      iptables -D DOCKER-USER -i $$BR_NAME -d 192.168.0.0/16 -j DROP 2>/dev/null || true &&
+
+      # 4. Apply strict drops for all RFC1918 Local IP ranges
+      iptables -I DOCKER-USER -i $$BR_NAME -d 10.0.0.0/8 -j DROP &&
+      iptables -I DOCKER-USER -i $$BR_NAME -d 172.16.0.0/12 -j DROP &&
+      iptables -I DOCKER-USER -i $$BR_NAME -d 192.168.0.0/16 -j DROP &&
+
+      echo \"Airgap active! Outbound internet allowed. Local LAN and Compose Network access denied.\" &&
+      tail -f /dev/null
+      "
+    restart: unless-stopped
+
 volumes:
   redis_data:
   postgres_data:
   clickhouse_data:
   minio_data:
+
+networks:
+  default:
+  sandbox_net:
+    name: sandbox_net
+    driver: bridge
