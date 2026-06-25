@@ -66,27 +66,39 @@ MAX_FAST_PATH_LEN = 15
 def _extract_tier_command(instruction: str) -> tuple[str, bool, bool, str | None]:
     """
     Detects tier and model override commands in a user instruction.
+    Supports /use:standard, /use:frontier, and /use:<model_alias>.
     Returns (cleaned_instruction, has_frontier, has_standard, requested_model).
     """
     if not instruction:
         return "", False, False, None
 
-    instruction_lower = instruction.lower()
-    has_frontier = "/frontier" in instruction_lower
-    has_standard = "/standard" in instruction_lower
-
+    has_frontier = False
+    has_standard = False
     requested_model = None
-    model_match = re.search(r"(?i)/model:([a-zA-Z0-9_]+)", instruction)
+
+    # 1. Look for specific tier overrides (using whitespace boundaries to prevent path collisions)
+    if re.search(r"(?i)(?:^|\s)/use:frontier(?=\s|$)", instruction):
+        has_frontier = True
+    elif re.search(r"(?i)(?:^|\s)/use:standard(?=\s|$)", instruction):
+        has_standard = True
+
+    # 2. Look for specific model aliases
+    # Matches /use: followed by word characters, but ignores standard/frontier
+    model_match = re.search(
+        r"(?i)(?:^|\s)/use:(?!standard\b|frontier\b)([a-zA-Z0-9_]+)(?=\s|$)", instruction
+    )
     if model_match:
         requested_model = model_match.group(1)
 
+    # If no commands were found, return early
     if not (has_frontier or has_standard or requested_model):
         return instruction, False, False, None
 
-    # Case-insensitively remove the commands
+    # 3. Clean the instruction safely by removing the command token and any extra spaces it leaves
     clean_instruction = re.sub(
-        r"(?i)/frontier|/standard|/model:[a-zA-Z0-9_]+", "", instruction
+        r"(?i)(?:^|\s)/use:(frontier|standard|[a-zA-Z0-9_]+)(?=\s|$)", "", instruction
     ).strip()
+
     clean_instruction = re.sub(r"\s+", " ", clean_instruction)
 
     return clean_instruction, has_frontier, has_standard, requested_model

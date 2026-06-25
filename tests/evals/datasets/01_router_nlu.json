@@ -1,6 +1,6 @@
 [
   {
-    "input": "/standard Update config/toggle_settings.yaml in langgraph-workspace-agent-sandbox to change both \"environment\" and \"log_level\" to \"staging-2\"",
+    "input": "/use:standard Update config/toggle_settings.yaml in langgraph-workspace-agent-sandbox to change both \"environment\" and \"log_level\" to \"staging-2\"",
     "expected_output": {
       "intent_category": "workspace_operation",
       "inferred_workspace": "langgraph-workspace-agent-sandbox",
@@ -8,7 +8,7 @@
     }
   },
   {
-    "input": "/standard Generate an env.yaml template with placeholder host API keys for the langgraph-workspace-agent-deployment.",
+    "input": "/use:standard Generate an env.yaml template with placeholder host API keys for the langgraph-workspace-agent-deployment.",
     "expected_output": {
       "intent_category": "workspace_operation",
       "inferred_workspace": "langgraph-workspace-agent-deployment",
@@ -16,7 +16,7 @@
     }
   },
   {
-    "input": "/standard Fix the quotation mark formatting in the LaTeX report.",
+    "input": "/use:standard Fix the quotation mark formatting in the LaTeX report.",
     "expected_output": {
       "intent_category": "workspace_operation",
       "inferred_workspace": null,
@@ -24,7 +24,7 @@
     }
   },
   {
-    "input": "/standard Can you check if the docker-compose.yml is secure enough to be made public?",
+    "input": "/use:standard Can you check if the docker-compose.yml is secure enough to be made public?",
     "expected_output": {
       "intent_category": "workspace_read_only",
       "inferred_workspace": null,
@@ -32,7 +32,7 @@
     }
   },
   {
-    "input": "/standard How do I securely pass an API key into a headless Docker container without baking it into the image?",
+    "input": "/use:standard How do I securely pass an API key into a headless Docker container without baking it into the image?",
     "expected_output": {
       "intent_category": "conversational",
       "inferred_workspace": null,

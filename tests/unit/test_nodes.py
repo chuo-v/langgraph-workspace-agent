@@ -52,7 +52,7 @@ from src.workspace_agent.orchestrator.router import (
 def test_extract_tier_command_success_case_insensitive():
     """Green Path: Handles weird casing."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "/STANDARD execute the script"
+        "/USE:STANDARD execute the script"
     )
     assert has_frontier is False
     assert has_standard is True
@@ -63,7 +63,7 @@ def test_extract_tier_command_success_case_insensitive():
 def test_extract_tier_command_success_frontier_prefix():
     """Green Path: Frontier command at the beginning."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "/frontier do a security audit"
+        "/use:frontier do a security audit"
     )
     assert has_frontier is True
     assert has_standard is False
@@ -74,7 +74,7 @@ def test_extract_tier_command_success_frontier_prefix():
 def test_extract_tier_command_success_middle():
     """Green Path: Command buried in the middle with awkward spacing."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "in langgraph_workspace_agent_test_arena  /frontier   change the title"
+        "in langgraph_workspace_agent_test_arena  /use:frontier   change the title"
     )
     assert has_frontier is True
     assert has_standard is False
@@ -85,7 +85,7 @@ def test_extract_tier_command_success_middle():
 def test_extract_tier_command_success_model_override():
     """Green Path: Successfully parses dynamic model override keys."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "/model:qwen_local summarize this"
+        "/use:qwen_local summarize this"
     )
     assert has_frontier is False
     assert has_standard is False
@@ -96,7 +96,7 @@ def test_extract_tier_command_success_model_override():
 def test_extract_tier_command_success_standard_suffix():
     """Green Path: Standard command at the end."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "change the log level /standard"
+        "change the log level /use:standard"
     )
     assert has_frontier is False
     assert has_standard is True
@@ -592,7 +592,7 @@ def test_parse_intent_node_success_forces_model(mocker):
         return_value=(mock_decision, None),
     )
 
-    state = {"original_instruction": "generate report /model:gemini_pro"}
+    state = {"original_instruction": "generate report /use:gemini_pro"}
     result = parse_intent_node(state)
 
     assert result["requested_model"] == "gemini_pro"
@@ -614,16 +614,16 @@ def test_parse_intent_node_success_forces_tier(mocker):
         return_value=(mock_decision, None),
     )
 
-    # 1. Test the /standard command
-    state_standard = {"original_instruction": "/standard optimize the script"}
+    # 1. Test the /use:standard command
+    state_standard = {"original_instruction": "/use:standard optimize the script"}
     result_standard = parse_intent_node(state_standard)
 
     assert result_standard["force_standard_tier"] is True
     assert result_standard["force_frontier_tier"] is False
     assert result_standard["original_instruction"] == "optimize the script"
 
-    # 2. Test the /frontier command
-    state_frontier = {"original_instruction": "/frontier rewrite the core engine"}
+    # 2. Test the /use:frontier command
+    state_frontier = {"original_instruction": "/use:frontier rewrite the core engine"}
     result_frontier = parse_intent_node(state_frontier)
 
     assert result_frontier["force_standard_tier"] is False
