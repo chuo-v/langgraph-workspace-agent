@@ -415,16 +415,15 @@ def test_route_after_human_clarify_fallback_workspace():
 # ==========================================
 
 
-def test_route_after_llm_fallback_missing_tools():
-    """Edge Path: LLM responds without tool calls during an operation. Force retry."""
+def test_route_after_llm_success_tool_calls():
+    """Green Path: LLM generates tool calls, direct graph to execute them."""
     state = {
         "is_aborted": False,
-        "intent_category": "workspace_operation",
-        "execution_retry_count": 0,
-        "messages": [AIMessage(content="I have reviewed the task and it is complete.")],
+        "messages": [
+            AIMessage(content="", tool_calls=[{"name": "read_files", "args": {}, "id": "1"}])
+        ],
     }
-    # With the new behavior, this should intercept and force a tool retry
-    assert route_after_llm(state) == "force_tool_retry"
+    assert route_after_llm(state) == "workspace_tools"
 
 
 def test_route_after_llm_success_no_tools_max_retries(mocker):
@@ -455,15 +454,16 @@ def test_route_after_llm_success_read_only_no_tools():
     assert route_after_llm(state) == "update_memory"
 
 
-def test_route_after_llm_success_tool_calls():
-    """Green Path: LLM generates tool calls, direct graph to execute them."""
+def test_route_after_llm_fallback_missing_tools():
+    """Edge Path: LLM responds without tool calls during an operation. Force retry."""
     state = {
         "is_aborted": False,
-        "messages": [
-            AIMessage(content="", tool_calls=[{"name": "read_files", "args": {}, "id": "1"}])
-        ],
+        "intent_category": "workspace_operation",
+        "execution_retry_count": 0,
+        "messages": [AIMessage(content="I have reviewed the task and it is complete.")],
     }
-    assert route_after_llm(state) == "workspace_tools"
+    # With the new behavior, this should intercept and force a tool retry
+    assert route_after_llm(state) == "force_tool_retry"
 
 
 def test_route_after_llm_fallback_empty_messages():
@@ -476,7 +476,7 @@ def test_route_after_llm_fallback_empty_messages():
 
 
 # ==========================================
-# Component: global_routing
+# Workflow: Global Abort Override
 # ==========================================
 
 
