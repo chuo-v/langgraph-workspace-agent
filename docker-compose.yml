@@ -26,6 +26,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       # Internal network address targeting the 'langfuse' Compose service
       - LANGFUSE_HOST=http://langfuse:3000
+      # Direct the agent to write its memory to the isolated state directory
+      - AGENT_PROFILE_PATH=/app/state/user_profile.json
     volumes:
       # Pass the Docker socket so the Python SDK can spawn ephemeral sibling sandboxes
       - /var/run/docker.sock:/var/run/docker.sock
@@ -33,8 +35,8 @@ services:
       - ${HOST_WORKSPACE_DIR}:${HOST_WORKSPACE_DIR}
       # Persist the local vector memory across container rebuilds
       - ./.chroma:/app/.chroma
-      # Inject the persistent user profile for the agent's long-term memory
-      - ${WORKSPACE_AGENT_PROFILE_PATH:-./user_profile.json}:/app/user_profile.json
+      # Mount a dedicated state directory to isolate sensitive data from the repo root
+      - ${WORKSPACE_AGENT_STATE_DIR:-./agent_state}:/app/state
       # Inject the dynamic routing and workspace configuration file
       - ${WORKSPACE_AGENT_CONFIG_PATH:-./config.yaml}:/app/config.yaml
     ports:
@@ -181,8 +183,74 @@ services:
     depends_on:
       - gateway
 
+  sandbox-firewall:
+    image: docker:cli
+    container_name: workspace_agent_firewall
+    privileged: true
+    network_mode: host
+    environment:
+      # Expose these to the entrypoint script, defaulting to Cloudflare and Quad9
+      - TRUSTED_DNS_PRIMARY=${TRUSTED_DNS_PRIMARY:-1.1.1.1}
+      - TRUSTED_DNS_SECONDARY=${TRUSTED_DNS_SECONDARY:-9.9.9.9}
+    volumes:
+      # Required to manage networks and inspect the sandbox_net ID dynamically
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: >
+      /bin/sh -c "
+      apk add --no-cache iptables &&
+
+      # Flush previous rules to prevent rule stacking
+      iptables -F DOCKER-USER 2>/dev/null || true &&
+
+      if ! docker network inspect sandbox_net >/dev/null 2>&1; then
+        docker network create --driver bridge sandbox_net;
+      fi &&
+
+      # Extract the network bridge ID and dynamic subnet CIDR
+      NETWORK_ID=$$(docker network inspect sandbox_net -f '{{.Id}}' | cut -c 1-12) &&
+      BR_NAME=\"br-$$NETWORK_ID\" &&
+      SUBNET=$$(docker network inspect sandbox_net -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}') &&
+
+      # ========================================================================
+      # FIREWALL RULES (Executed in REVERSE order of evaluation due to '-I')
+      # ========================================================================
+
+      # DROP generic DNS queries
+      iptables -I DOCKER-USER -i $$BR_NAME -p udp --dport 53 -j DROP &&
+      iptables -I DOCKER-USER -i $$BR_NAME -p tcp --dport 53 -j DROP &&
+
+      # DROP RFC1918 Local IP ranges
+      # Blocks access to local host networks, Postgres, Redis, etc.
+      iptables -I DOCKER-USER -i $$BR_NAME -d 10.0.0.0/8 -j DROP &&
+      iptables -I DOCKER-USER -i $$BR_NAME -d 172.16.0.0/12 -j DROP &&
+      iptables -I DOCKER-USER -i $$BR_NAME -d 192.168.0.0/16 -j DROP &&
+
+      # ALLOW DNS ONLY to trusted resolvers
+      # Placed above the RFC1918 drops so whitelisted resolvers are permitted
+      # even if they reside on a private network range (e.g., corporate 10.x.x.x).
+      iptables -I DOCKER-USER -i $$BR_NAME -d $$TRUSTED_DNS_PRIMARY -p udp --dport 53 -j ACCEPT &&
+      iptables -I DOCKER-USER -i $$BR_NAME -d $$TRUSTED_DNS_PRIMARY -p tcp --dport 53 -j ACCEPT &&
+
+      iptables -I DOCKER-USER -i $$BR_NAME -d $$TRUSTED_DNS_SECONDARY -p udp --dport 53 -j ACCEPT &&
+      iptables -I DOCKER-USER -i $$BR_NAME -d $$TRUSTED_DNS_SECONDARY -p tcp --dport 53 -j ACCEPT &&
+
+      # ALLOW intra-subnet traffic
+      # Ensures the sandbox can communicate with its own default gateway to route outbound.
+      iptables -I DOCKER-USER -i $$BR_NAME -d $$SUBNET -j ACCEPT &&
+
+      echo \"Airgap active. Subnet $$SUBNET whitelisted. Allowed DNS: $$TRUSTED_DNS_PRIMARY and $$TRUSTED_DNS_SECONDARY\" &&
+      tail -f /dev/null
+      "
+    restart: unless-stopped
+
 volumes:
   redis_data:
   postgres_data:
   clickhouse_data:
   minio_data:
+
+networks:
+  default:
+  sandbox_net:
+    name: sandbox_net
+    driver: bridge

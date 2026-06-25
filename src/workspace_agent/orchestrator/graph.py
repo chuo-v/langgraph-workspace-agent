@@ -306,7 +306,9 @@ workflow.add_edge("cleanup_workflow", END)
 agent_store = InMemoryStore()
 
 # hydrate the store from disk to survive FastAPI/Docker restarts
-PROFILE_PATH = os.path.join(os.getcwd(), "user_profile.json")
+default_profile_path = os.path.join(os.getcwd(), "agent_state", "user_profile.json")
+PROFILE_PATH = os.getenv("AGENT_PROFILE_PATH", default_profile_path)
+
 if os.path.exists(PROFILE_PATH):
     try:
         with open(PROFILE_PATH, encoding="utf-8") as f:

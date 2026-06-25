@@ -229,3 +229,4 @@ config.yaml
 
 # Agent Memory State
 user_profile.json
+agent_state/

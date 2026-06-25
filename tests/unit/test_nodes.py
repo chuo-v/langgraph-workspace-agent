@@ -1,7 +1,13 @@
 import subprocess
 import time
 
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.store.memory import InMemoryStore
 
 from src.workspace_agent.orchestrator.nodes import (
@@ -46,7 +52,7 @@ from src.workspace_agent.orchestrator.router import (
 def test_extract_tier_command_success_case_insensitive():
     """Green Path: Handles weird casing."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "/STANDARD execute the script"
+        "/USE:STANDARD execute the script"
     )
     assert has_frontier is False
     assert has_standard is True
@@ -57,7 +63,7 @@ def test_extract_tier_command_success_case_insensitive():
 def test_extract_tier_command_success_frontier_prefix():
     """Green Path: Frontier command at the beginning."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "/frontier do a security audit"
+        "/use:frontier do a security audit"
     )
     assert has_frontier is True
     assert has_standard is False
@@ -68,7 +74,7 @@ def test_extract_tier_command_success_frontier_prefix():
 def test_extract_tier_command_success_middle():
     """Green Path: Command buried in the middle with awkward spacing."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "in langgraph_workspace_agent_test_arena  /frontier   change the title"
+        "in langgraph_workspace_agent_test_arena  /use:frontier   change the title"
     )
     assert has_frontier is True
     assert has_standard is False
@@ -79,7 +85,7 @@ def test_extract_tier_command_success_middle():
 def test_extract_tier_command_success_model_override():
     """Green Path: Successfully parses dynamic model override keys."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "/model:qwen_local summarize this"
+        "/use:qwen_local summarize this"
     )
     assert has_frontier is False
     assert has_standard is False
@@ -90,7 +96,7 @@ def test_extract_tier_command_success_model_override():
 def test_extract_tier_command_success_standard_suffix():
     """Green Path: Standard command at the end."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "change the log level /standard"
+        "change the log level /use:standard"
     )
     assert has_frontier is False
     assert has_standard is True
@@ -586,7 +592,7 @@ def test_parse_intent_node_success_forces_model(mocker):
         return_value=(mock_decision, None),
     )
 
-    state = {"original_instruction": "generate report /model:gemini_pro"}
+    state = {"original_instruction": "generate report /use:gemini_pro"}
     result = parse_intent_node(state)
 
     assert result["requested_model"] == "gemini_pro"
@@ -608,16 +614,16 @@ def test_parse_intent_node_success_forces_tier(mocker):
         return_value=(mock_decision, None),
     )
 
-    # 1. Test the /standard command
-    state_standard = {"original_instruction": "/standard optimize the script"}
+    # 1. Test the /use:standard command
+    state_standard = {"original_instruction": "/use:standard optimize the script"}
     result_standard = parse_intent_node(state_standard)
 
     assert result_standard["force_standard_tier"] is True
     assert result_standard["force_frontier_tier"] is False
     assert result_standard["original_instruction"] == "optimize the script"
 
-    # 2. Test the /frontier command
-    state_frontier = {"original_instruction": "/frontier rewrite the core engine"}
+    # 2. Test the /use:frontier command
+    state_frontier = {"original_instruction": "/use:frontier rewrite the core engine"}
     result_frontier = parse_intent_node(state_frontier)
 
     assert result_frontier["force_standard_tier"] is False
@@ -699,6 +705,67 @@ def test_parse_intent_node_success_sliding_window_truncation(mocker):
     assert "A" * 500 in recent_context
 
 
+def test_parse_intent_node_success_fast_path_conversational(mocker):
+    """
+    Green Path: Verifies that simple decline keywords bypass the router and return conversational
+    intent.
+    """
+    # mock the escalating router to crash if called, proving the fast path safely bypassed it
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes._invoke_escalating_router",
+        side_effect=Exception("Router should not be called"),
+    )
+
+    state = {
+        "original_instruction": "Run pytest",
+        "messages": [HumanMessage(content="No.")],
+    }
+
+    result = parse_intent_node(state)
+
+    assert result["intent_category"] == "conversational"
+    assert result["router_confidence"] == 1.0
+    assert result["t1_base_calls"] == 0
+
+
+def test_parse_intent_node_success_latest_human_message_override(mocker):
+    """
+    Green Path: Verifies that the latest human conversational message correctly
+    overrides the original_instruction to prevent task loops.
+    """
+    mock_router = mocker.Mock()
+    mock_decision = mocker.Mock()
+    mock_decision.intent_category = "conversational"
+    mock_decision.inferred_workspace = None
+    mock_decision.is_context_missing = False
+    mock_decision.clarification_question_to_ask = None
+    mock_decision.task_complexity = "low"
+    mock_decision.router_confidence = 0.99
+    mock_router.invoke.return_value = mock_decision
+
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_intent_router", return_value=mock_router
+    )
+
+    state = {
+        "original_instruction": "Run the pytest suite",
+        "messages": [
+            HumanMessage(content="Run the pytest suite"),
+            AIMessage(content="All tests passed."),
+            # Changed from "No" to a command that forces it to hit the router
+            HumanMessage(content="Actually, compile the report instead."),
+        ],
+    }
+
+    parse_intent_node(state)
+
+    # Extract the payload dictionary sent to the chain
+    prompt_sent = mock_router.invoke.call_args[0][0]
+
+    # Verify the routing instruction is the latest conversational message, not the original task
+    assert prompt_sent["instruction"] == "Actually, compile the report instead."
+
+
 def test_parse_intent_node_fallback_context_missing_trap(mocker):
     """
     Edge Path: Verifies that if the LLM flags missing context, the node
@@ -727,6 +794,45 @@ def test_parse_intent_node_fallback_context_missing_trap(mocker):
 
     # Verify the path was forcefully nullified to prevent blind execution
     assert result["workspace_absolute_path"] is None
+
+
+def test_parse_intent_node_fallback_ignores_system_traps(mocker):
+    """
+    Edge Path: Verifies that system-injected rejection or error messages
+    are safely bypassed when dynamically extracting the latest human instruction.
+    """
+    mock_router = mocker.Mock()
+    mock_decision = mocker.Mock()
+    mock_decision.intent_category = "workspace_operation"
+    mock_decision.inferred_workspace = None
+    mock_decision.is_context_missing = False
+    mock_decision.clarification_question_to_ask = None
+    mock_decision.task_complexity = "low"
+    mock_decision.router_confidence = 0.99
+    mock_router.invoke.return_value = mock_decision
+
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_intent_router", return_value=mock_router
+    )
+
+    state = {
+        "original_instruction": "Fix the compiler bug",
+        "messages": [
+            HumanMessage(content="Fix the compiler bug"),
+            AIMessage(content="I tried."),
+            HumanMessage(content="SYSTEM REJECTION: SyntaxError"),  # Should be ignored
+            AIMessage(content="I tried again."),
+            HumanMessage(content="SYSTEM ERROR: API Timeout"),  # Should be ignored
+        ],
+    }
+
+    parse_intent_node(state)
+
+    # Extract the payload dictionary sent to the chain
+    prompt_sent = mock_router.invoke.call_args[0][0]
+
+    # Verify it bypassed the system traps and locked onto the actual human request
+    assert prompt_sent["instruction"] == "Fix the compiler bug"
 
 
 def test_parse_intent_node_error_escalation_failure(mocker):
@@ -1378,6 +1484,11 @@ def test_agentic_ci_node_success_all_pass(mocker):
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.settings.workspaces", {"test_ws": mock_workspace}
     )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.sync_to_commit",
+        return_value='{"status": "success", "commit": "sha123"}',
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
 
     # mock subprocess.run for both suites
     mock_process = mocker.Mock()
@@ -1422,8 +1533,8 @@ def test_agentic_ci_node_fallback_missing_context():
     """Edge Path: Ensure node bypasses execution if missing webhook context."""
     state = {
         "workspace_absolute_path": "/tmp/test",
-        "commit_sha": None,  # Missing context explicitly
-        "pr_number": 42,
+        "commit_sha": "sha123",
+        "pr_number": None,
     }
 
     result = agentic_ci_node(state)
@@ -1442,6 +1553,11 @@ def test_agentic_ci_node_error_timeout(mocker):
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.settings.workspaces", {"test_ws": mock_workspace}
     )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.sync_to_commit",
+        return_value='{"status": "success", "commit": "sha123"}',
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
 
     # Raise TimeoutExpired to simulate a hanging execution
     mocker.patch(
@@ -1820,6 +1936,12 @@ def test_conversational_reply_node_success_standard(mocker):
 
     assert result["messages"][0].content == "Hello there!"
     assert result["t1_base_calls"] == 1
+    assert result["is_busy"] is False
+
+    # Verify system prompt was injected to prevent hallucination
+    prompt_sent = mock_llm.invoke.call_args[0][0]
+    assert isinstance(prompt_sent[0], SystemMessage)
+    assert "helpful AI workspace assistant" in prompt_sent[0].content
 
 
 def test_pr_merged_node_success_standard(mocker):

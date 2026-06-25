@@ -58,6 +58,16 @@ class MockWorkspaceTracker:
             with open(calc_path, "w") as f:
                 f.write("def divide(a, b):\n    return a / b\n\nprint(divide(10, 0))\n")
 
+            math_utils_path = os.path.join(temp_path, "math_utils.py")
+            with open(math_utils_path, "w") as f:
+                f.write("def add(a, b):\n    return a - b\n")
+
+            test_math_path = os.path.join(temp_path, "test_math.py")
+            with open(test_math_path, "w") as f:
+                f.write(
+                    "from math_utils import add\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+                )
+
             repo.git.add(A=True)
             repo.git.commit("-m", "Initial sandbox commit")
 
@@ -115,6 +125,10 @@ class MockWorkspaceTracker:
         self.patcher_python = patch("src.workspace_agent.tools.sandbox.run_python_script")
         self.mock_python = self.patcher_python.start()
         self.mock_python.side_effect = self._mock_run_python_script
+
+        self.patcher_pytest = patch("src.workspace_agent.tools.sandbox.run_pytest")
+        self.mock_pytest = self.patcher_pytest.start()
+        self.mock_pytest.side_effect = self._mock_run_pytest
 
         # Acts as an inescapable choke point for native tool execution observability
         self.patcher_exec = patch("src.workspace_agent.orchestrator.nodes.execute_tool_call")
@@ -237,3 +251,58 @@ class MockWorkspaceTracker:
     def _mock_delete_branch(self, *args, **kwargs):
         # Mock branch deletion to prevent tests from accidentally deleting real unpushed branches
         self.invocation_history.append({"tool": "cleanup_local_branch", "kwargs": kwargs})
+
+    def _mock_run_pytest(self, *args, **kwargs) -> str:
+        """Reads file state from ephemeral disk to verify fixes during test execution."""
+        test_path = kwargs.get("test_file_path") or (args[0] if args else "")
+
+        self.invocation_history.append(
+            {"tool": "run_pytest", "kwargs": {"test_file_path": test_path}}
+        )
+
+        target_path = test_path
+        base_dir = None
+
+        # Resolve the path relative to the active sandboxes
+        if not os.path.isabs(test_path):
+            for base_path in self.sandbox_paths.values():
+                possible_path = os.path.join(base_path, test_path)
+                if os.path.exists(possible_path):
+                    target_path = possible_path
+                    base_dir = base_path
+                    break
+        else:
+            for base_path in self.sandbox_paths.values():
+                if test_path.startswith(base_path):
+                    base_dir = base_path
+                    break
+
+        if base_dir and os.path.exists(target_path):
+            math_utils_path = os.path.join(base_dir, "math_utils.py")
+            if os.path.exists(math_utils_path):
+                with open(math_utils_path) as f:
+                    content = f.read()
+
+                # Check if the bug is still present (if LLM hasn't fixed the subtraction)
+                if "a - b" in content and "a + b" not in content:
+                    return (
+                        "Pytest Execution Finished (Exit Code: 1)\n\n"
+                        "Test Logs:\n"
+                        "============================= test session starts "
+                        "==============================\n"
+                        "FAILED test_math.py::test_add - assert -1 == 5\n"
+                        "============================== 1 failed in 0.01s "
+                        "==============================="
+                    )
+
+                return (
+                    "Pytest Execution Finished (Exit Code: 0)\n\n"
+                    "Test Logs:\n"
+                    "============================= test session starts "
+                    "==============================\n"
+                    "passed test_math.py::test_add\n"
+                    "============================== 1 passed in 0.01s "
+                    "==============================="
+                )
+
+        return f"Error: Test path not found at {test_path}"

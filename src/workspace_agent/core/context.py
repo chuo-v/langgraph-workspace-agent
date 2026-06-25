@@ -8,7 +8,7 @@ from src.workspace_agent.core.prompt_manager import PromptManager
 from src.workspace_agent.core.vector_memory import semantic_search
 
 
-def get_hybrid_context(  # noqa: PLR0913
+def get_hybrid_context(
     messages: list,
     thread_id: str,
     user_id: str,

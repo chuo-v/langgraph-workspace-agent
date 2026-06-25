@@ -41,6 +41,7 @@ from src.workspace_agent.tools.github import (
     open_pull_request,
     set_commit_status,
     sync_repository,
+    sync_to_commit,
     update_pull_request,
 )
 from src.workspace_agent.tools.registry import agent_tools, execute_tool_call
@@ -54,6 +55,7 @@ MAX_CONTEXT_LENGTH = 500
 MAX_DIFF_LENGTH = 40000
 MAX_CONSECUTIVE_TOOL_STEPS = 30
 MAX_GITHUB_COMMENT_LENGTH = 60000
+MAX_FAST_PATH_LEN = 15
 
 
 # ==========================================
@@ -64,27 +66,39 @@ MAX_GITHUB_COMMENT_LENGTH = 60000
 def _extract_tier_command(instruction: str) -> tuple[str, bool, bool, str | None]:
     """
     Detects tier and model override commands in a user instruction.
+    Supports /use:standard, /use:frontier, and /use:<model_alias>.
     Returns (cleaned_instruction, has_frontier, has_standard, requested_model).
     """
     if not instruction:
         return "", False, False, None
 
-    instruction_lower = instruction.lower()
-    has_frontier = "/frontier" in instruction_lower
-    has_standard = "/standard" in instruction_lower
-
+    has_frontier = False
+    has_standard = False
     requested_model = None
-    model_match = re.search(r"(?i)/model:([a-zA-Z0-9_]+)", instruction)
+
+    # 1. Look for specific tier overrides (using whitespace boundaries to prevent path collisions)
+    if re.search(r"(?i)(?:^|\s)/use:frontier(?=\s|$)", instruction):
+        has_frontier = True
+    elif re.search(r"(?i)(?:^|\s)/use:standard(?=\s|$)", instruction):
+        has_standard = True
+
+    # 2. Look for specific model aliases
+    # Matches /use: followed by word characters, but ignores standard/frontier
+    model_match = re.search(
+        r"(?i)(?:^|\s)/use:(?!standard\b|frontier\b)([a-zA-Z0-9_]+)(?=\s|$)", instruction
+    )
     if model_match:
         requested_model = model_match.group(1)
 
+    # If no commands were found, return early
     if not (has_frontier or has_standard or requested_model):
         return instruction, False, False, None
 
-    # Case-insensitively remove the commands
+    # 3. Clean the instruction safely by removing the command token and any extra spaces it leaves
     clean_instruction = re.sub(
-        r"(?i)/frontier|/standard|/model:[a-zA-Z0-9_]+", "", instruction
+        r"(?i)(?:^|\s)/use:(frontier|standard|[a-zA-Z0-9_]+)(?=\s|$)", "", instruction
     ).strip()
+
     clean_instruction = re.sub(r"\s+", " ", clean_instruction)
 
     return clean_instruction, has_frontier, has_standard, requested_model
@@ -167,6 +181,64 @@ def _check_circuit_breaker(messages: list) -> dict | None:
     return None
 
 
+def _get_latest_human_instruction(messages: list, fallback: str) -> str:
+    """Extracts the absolute latest user feedback, explicitly ignoring system traps."""
+    latest_human_msg = next(
+        (
+            m.content
+            for m in reversed(messages)
+            if m.type == "human"
+            and not str(m.content).startswith("SYSTEM REJECTION")
+            and not str(m.content).startswith("SYSTEM ERROR")
+        ),
+        "",
+    )
+    return latest_human_msg if latest_human_msg else fallback
+
+
+def _check_conversational_fast_path(clean_instruction: str) -> bool:
+    """
+    Fast-path for simple conversational declines/acknowledgments to prevent
+    router confusion (e.g., when the user says "No" to an AI-generated
+    question that wasn't a formal tool interrupt).
+    """
+    quick_responses = {
+        "no",
+        "nope",
+        "nah",
+        "stop",
+        "done",
+        "thanks",
+        "thank you",
+        "no thanks",
+        "goodbye",
+        "bye",
+        "ok",
+        "okay",
+    }
+    check_str = re.sub(r"[^a-zA-Z\s]", "", clean_instruction.strip()).strip().lower()
+    return len(check_str) < MAX_FAST_PATH_LEN and check_str in quick_responses
+
+
+def _build_recent_context(messages: list) -> str:
+    """Builds a truncated sliding window of the conversation history."""
+    if not messages or len(messages) <= 1:
+        return ""
+
+    recent_msgs = messages[-4:]
+    history_lines = []
+
+    for m in recent_msgs:
+        content_str = str(m.content)
+        if len(content_str) > MAX_CONTEXT_LENGTH:
+            content_str = content_str[:MAX_CONTEXT_LENGTH] + "... [TRUNCATED FOR ROUTING]"
+        speaker = "User" if m.type == "human" else "Agent"
+        history_lines.append(f"{speaker}: {content_str}")
+
+    context_str = "\n".join(history_lines)
+    return f"\nRecent Conversation Context:\n{context_str}\n"
+
+
 def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
     """
     Tier 1 Routing Node with Escalation.
@@ -174,45 +246,47 @@ def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
     Uses limited recent message history to handle conversational follow-ups naturally.
     """
     config = config or {}
-    instruction = state.get("original_instruction", "")
 
-    # extract the command and clean the instruction immediately
-    clean_instruction, has_frontier_override, has_standard_override, requested_model = (
-        _extract_tier_command(instruction)
+    instruction = _get_latest_human_instruction(
+        state.get("messages", []), state.get("original_instruction", "")
     )
 
-    # Build conversational context sliding window for the payload
-    context_block = ""
-    if state.get("messages") and len(state["messages"]) > 1:
-        # grab the last 4 messages (2 conversational turns)
-        recent_msgs = state["messages"][-4:]
-        history_lines = []
+    clean_instruction, has_frontier, has_standard, requested_model = _extract_tier_command(
+        instruction
+    )
 
-        for m in recent_msgs:
-            # Aggressively truncate history to prevent context poisoning from long responses
-            content_str = str(m.content)
-            if len(content_str) > MAX_CONTEXT_LENGTH:
-                content_str = content_str[:MAX_CONTEXT_LENGTH] + "... [TRUNCATED FOR ROUTING]"
-            speaker = "User" if m.type == "human" else "Agent"
-            history_lines.append(f"{speaker}: {content_str}")
+    # 1. Fast-Path Bypass
+    if _check_conversational_fast_path(clean_instruction):
+        state_update = {
+            "intent_category": "conversational",
+            "inferred_workspace": None,
+            "workspace_absolute_path": None,
+            "target_branch": None,
+            "router_confidence": 1.0,
+            "force_frontier_tier": False,
+            "force_standard_tier": False,
+            "requested_model": requested_model,
+            "clarification_question": None,
+            "t1_base_calls": state.get("t1_base_calls", 0),
+        }
+        if has_frontier or has_standard or requested_model:
+            state_update["original_instruction"] = clean_instruction
+            if state.get("messages") and state["messages"][-1].type == "human":
+                updated_message = HumanMessage(
+                    content=clean_instruction, id=state["messages"][-1].id
+                )
+                state_update["messages"] = [updated_message]
+        return state_update
 
-        context_str = "\n".join(history_lines)
-        context_block = f"\nRecent Conversation Context:\n{context_str}\n"
-
-    # Package the variables into a generic dictionary payload for the unified chain
+    # 2. Build Payload
     payload = {
         "instruction": clean_instruction,
-        "recent_context": context_block,
+        "recent_context": _build_recent_context(state.get("messages", [])),
     }
 
-    # dynamically set the initial routing tier based on human overrides
-    if has_frontier_override:
-        initial_tier = TIER_FRONTIER
-    elif has_standard_override:
-        initial_tier = TIER_STANDARD
-    else:
-        initial_tier = TIER_BASE
+    initial_tier = TIER_FRONTIER if has_frontier else (TIER_STANDARD if has_standard else TIER_BASE)
 
+    # 3. Escalate & Route
     decision, latest_error = _invoke_escalating_router(payload, initial_tier, config)
 
     if not decision:
@@ -228,26 +302,22 @@ def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
             "is_aborted": True,
         }
 
-    # resolve the inferred workspace friendly name to its absolute path from config.yaml
+    # 4. Resolve Context & Workspace State
     absolute_path = None
     target_branch = None
 
     if decision.inferred_workspace and decision.inferred_workspace in settings.workspaces:
         workspace_config = settings.workspaces[decision.inferred_workspace]
         absolute_path = workspace_config.path
-        # use the workspace override if it exists, otherwise use the global default
         target_branch = workspace_config.target_branch or settings.agent.target_branch
 
-    # trap the new CoT context missing flag
     clarification_question = None
     if decision.is_context_missing and decision.clarification_question_to_ask:
         clarification_question = decision.clarification_question_to_ask
-        # force path to None so the graph strictly routes to the clarify node
         absolute_path = None
 
-    # determine the execution tier based on user override OR autonomous triage
-    force_frontier = has_frontier_override or (decision.task_complexity == "high")
-    force_standard = (has_standard_override and not has_frontier_override) or (
+    force_frontier = has_frontier or (decision.task_complexity == "high")
+    force_standard = (has_standard and not has_frontier) or (
         not force_frontier and (decision.task_complexity == "medium")
     )
 
@@ -259,20 +329,16 @@ def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
         "router_confidence": decision.router_confidence,
         "force_frontier_tier": force_frontier,
         "force_standard_tier": force_standard,
-        "requested_model": requested_model,  # <--- INJECT MODEL
+        "requested_model": requested_model,
         "clarification_question": clarification_question,
         "t1_base_calls": state.get("t1_base_calls", 0) + 1,
     }
 
-    # overwrite the original instruction in the state if we stripped the command
-    if has_frontier_override or has_standard_override or requested_model:
+    if has_frontier or has_standard or requested_model:
         state_update["original_instruction"] = clean_instruction
-
-        if state.get("messages"):
-            last_message = state["messages"][-1]
-            if last_message.type == "human":
-                updated_message = HumanMessage(content=clean_instruction, id=last_message.id)
-                state_update["messages"] = [updated_message]
+        if state.get("messages") and state["messages"][-1].type == "human":
+            updated_message = HumanMessage(content=clean_instruction, id=state["messages"][-1].id)
+            state_update["messages"] = [updated_message]
 
     return state_update
 
@@ -284,8 +350,27 @@ def conversational_reply_node(state: AgentState, config: RunnableConfig = None) 
     llm = get_execution_llm(
         requested_tier=TIER_BASE, requested_model_key=state.get("requested_model")
     )
-    response = llm.invoke(state["messages"], config=config)
-    return {"messages": [response], "t1_base_calls": state.get("t1_base_calls", 0) + 1}
+
+    # Inject a system prompt to guide the conversational response and prevent hallucination
+    system_prompt = SystemMessage(
+        content=(
+            "You are a helpful AI workspace assistant. Respond to the user's conversational "
+            "message concisely. If the user is declining further assistance, saying goodbye, "
+            "or acknowledging completion, respond politely and terminate the interaction. "
+            "Do NOT hallucinate or simulate tool outputs, logs, or test results."
+        )
+    )
+
+    # Prepend the system prompt dynamically without permanently saving it to state
+    messages_to_send = [system_prompt] + state.get("messages", [])
+
+    response = llm.invoke(messages_to_send, config=config)
+
+    return {
+        "messages": [response],
+        "t1_base_calls": state.get("t1_base_calls", 0) + 1,
+        "is_busy": False,  # Ensure the workflow is safely unlocked for the next task
+    }
 
 
 def clarification_node(state: AgentState) -> dict:
@@ -1107,44 +1192,30 @@ def force_tool_retry_node(state: AgentState) -> dict:
     }
 
 
-def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
-    """
-    Agentic CI/CD Execution Node.
-    Iterates through configured CI suites, executes them via OS-level subprocess isolation,
-    and natively reports status checks and log aggregations back to the GitHub Pull Request.
-    """
-    target_path = state.get("workspace_absolute_path")
-    commit_sha = state.get("commit_sha")
-    pr_number = state.get("pr_number")
-
-    if not target_path or not commit_sha or not pr_number:
-        # Skip if missing necessary GitHub webhook context
-        return {}
-
-    workspace_config = next(
-        (ws for ws in settings.workspaces.values() if ws.path == target_path), None
-    )
-
-    if not workspace_config or not workspace_config.ci_suites:
-        return {"ci_results": []}
-
-    expanded_target_path = os.path.expanduser(target_path)
-
+def _execute_ci_suites(
+    target_path: str,
+    expanded_target_path: str,
+    active_commit_sha: str,
+    ci_suites: list,
+    repo_full_name: str | None,
+) -> list[dict]:
+    """Helper to isolate CI subprocess executions and status reporting."""
     # 1. Post pending statuses for all suites upfront
-    for suite in workspace_config.ci_suites:
+    for suite in ci_suites:
         context_str = f"Agentic CI / {suite.name}"
         set_commit_status(
             directory=target_path,
-            commit_sha=commit_sha,
+            commit_sha=active_commit_sha,
             state="pending",
             context_str=context_str,
             description="Evaluation is running...",
+            repo_full_name=repo_full_name,
         )
 
     results = []
 
     # 2. Execute each suite strictly sequentially
-    for suite in workspace_config.ci_suites:
+    for suite in ci_suites:
         context_str = f"Agentic CI / {suite.name}"
         try:
             process = subprocess.run(
@@ -1162,10 +1233,11 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
 
             set_commit_status(
                 directory=target_path,
-                commit_sha=commit_sha,
+                commit_sha=active_commit_sha,
                 state="success" if passed else "failure",
                 context_str=context_str,
                 description="Evaluation passed" if passed else "Evaluation failed",
+                repo_full_name=repo_full_name,
             )
 
             results.append({"name": suite.name, "passed": passed, "logs": logs})
@@ -1184,58 +1256,139 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
 
             logs = (
                 f"{stdout_str}\n{stderr_str}\n\n"
-                f"[ERROR: TimeoutExpired] Command timed out after {suite.timeout_seconds} seconds."
+                f"[ERROR: TimeoutExpired] Command timed out after "
+                f"{suite.timeout_seconds} seconds."
             ).strip()
 
             set_commit_status(
                 directory=target_path,
-                commit_sha=commit_sha,
+                commit_sha=active_commit_sha,
                 state="failure",
                 context_str=context_str,
                 description="Execution timed out",
+                repo_full_name=repo_full_name,
             )
 
             results.append({"name": suite.name, "passed": False, "logs": logs})
         except Exception as e:
             set_commit_status(
                 directory=target_path,
-                commit_sha=commit_sha,
+                commit_sha=active_commit_sha,
                 state="error",
                 context_str=context_str,
                 description="OS error during execution",
+                repo_full_name=repo_full_name,
             )
             results.append({"name": suite.name, "passed": False, "logs": f"OS Error: {str(e)}"})
 
-    # 3. Post Consolidated PR Comment
-    if results:
-        summary_table = "| Suite | Status |\n|---|---|\n"
-        for r in results:
-            status_icon = "✅ Pass" if r["passed"] else "❌ Fail"
-            summary_table += f"| {r['name']} | {status_icon} |\n"
+    return results
 
-        details_sections = ""
-        for r in results:
-            safe_logs = (
-                r["logs"][:MAX_GITHUB_COMMENT_LENGTH] + "\n...[TRUNCATED]"
-                if len(r["logs"]) > MAX_GITHUB_COMMENT_LENGTH
-                else r["logs"]
+
+def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
+    """
+    Agentic CI/CD Execution Node.
+    Iterates through configured CI suites, executes them via OS-level subprocess isolation,
+    and natively reports status checks and log aggregations back to the GitHub Pull Request.
+    """
+    target_path = state.get("workspace_absolute_path")
+    repo_full_name = state.get("repo_full_name")
+    commit_sha = state.get("commit_sha")
+    pr_number = state.get("pr_number")
+    target_branch = state.get("target_branch", "main")
+
+    # We must at least have the path and PR number to proceed.
+    # (commit_sha might be missing on ChatOps triggers, we will fetch it dynamically)
+    if not target_path or not pr_number:
+        return {}
+
+    workspace_config = next(
+        (ws for ws in settings.workspaces.values() if ws.path == target_path), None
+    )
+
+    if not workspace_config or not workspace_config.ci_suites:
+        print(
+            f"Warning: Agentic CI skipped. No 'ci_suites' found in config for {target_path}",
+            flush=True,
+        )
+        return {"ci_results": []}
+
+    expanded_target_path = os.path.expanduser(target_path)
+
+    # 0. Sync workspace to the exact PR commit safely before running tests
+    sync_res = json.loads(
+        sync_to_commit(expanded_target_path, commit_sha=commit_sha, pr_number=pr_number)
+    )
+    if sync_res.get("status") == "error":
+        print(f"Agentic CI sync error: {sync_res}", flush=True)
+        if commit_sha:
+            set_commit_status(
+                directory=target_path,
+                commit_sha=commit_sha,
+                state="error",
+                context_str="Agentic CI / Setup",
+                description="Failed to checkout PR branch for testing.",
+                repo_full_name=repo_full_name,
             )
+        return {"ci_results": []}
 
-            details_sections += (
-                f"\n<details><summary>Logs: {r['name']}</summary>\n\n"
-                f"```text\n{safe_logs}\n```\n</details>\n"
-            )
+    active_commit_sha = sync_res.get("commit")
 
-        raw_prefix = settings.agent.agent_prefix or ""
-        prefix_str = f"{raw_prefix} " if raw_prefix and not raw_prefix.endswith(" ") else raw_prefix
-
-        comment_body = (
-            f"## {prefix_str}Agentic CI/CD Results\n\n{summary_table}\n{details_sections}"
+    try:
+        # Execute all suites cleanly using the helper
+        results = _execute_ci_suites(
+            target_path=target_path,
+            expanded_target_path=expanded_target_path,
+            active_commit_sha=active_commit_sha,
+            ci_suites=workspace_config.ci_suites,
+            repo_full_name=repo_full_name,
         )
 
-        comment_on_pull_request(directory=target_path, pr_number=pr_number, body=comment_body)
+        # 3. Post Consolidated PR Comment
+        if results:
+            summary_table = "| Suite | Status |\n|---|---|\n"
+            for r in results:
+                status_icon = "✅ Pass" if r["passed"] else "❌ Fail"
+                summary_table += f"| {r['name']} | {status_icon} |\n"
 
-    return {"ci_results": results}
+            details_sections = ""
+            for r in results:
+                safe_logs = (
+                    r["logs"][:MAX_GITHUB_COMMENT_LENGTH] + "\n...[TRUNCATED]"
+                    if len(r["logs"]) > MAX_GITHUB_COMMENT_LENGTH
+                    else r["logs"]
+                )
+
+                details_sections += (
+                    f"\n<details><summary>Logs: {r['name']}</summary>\n\n"
+                    f"```text\n{safe_logs}\n```\n</details>\n"
+                )
+
+            raw_prefix = settings.agent.agent_prefix or ""
+            prefix_str = (
+                f"{raw_prefix} " if raw_prefix and not raw_prefix.endswith(" ") else raw_prefix
+            )
+
+            comment_body = (
+                f"## {prefix_str}Agentic CI/CD Results\n\n{summary_table}\n{details_sections}"
+            )
+
+            comment_on_pull_request(
+                directory=target_path,
+                pr_number=pr_number,
+                body=comment_body,
+                repo_full_name=repo_full_name,
+            )
+
+        return {"ci_results": results}
+
+    finally:
+        # 4. Cleanup: Restore the repository to the target_branch
+        # Ensures the agent isn't left stranded in a detached HEAD state on a PR commit
+        try:
+            sync_repository(expanded_target_path, target_branch)
+        except Exception as e:
+            # Log non-fatal error but don't crash the workflow
+            print(f"Warning: Failed to restore branch after CI: {e}", flush=True)
 
 
 # ==========================================
@@ -1724,8 +1877,12 @@ def update_memory_node(
         }
         store.put(namespace, "profile", updated_profile)
 
-        # mirror to disk for persistence across container restarts
-        profile_path = os.path.join(os.getcwd(), "user_profile.json")
+        # Mirror to disk for persistence across container restarts
+        default_profile_path = os.path.join(os.getcwd(), "agent_state", "user_profile.json")
+        profile_path = os.getenv("AGENT_PROFILE_PATH", default_profile_path)
+
+        os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+
         try:
             with open(profile_path, "w", encoding="utf-8") as f:
                 json.dump(updated_profile, f, indent=2)

@@ -1,15 +1,22 @@
+# Use a single stage to maintain system and library integrity
 FROM python:3.11-slim
 
-# install LaTeX and build tools
-RUN apt-get update && apt-get install -y \
+# Set the isolated runtime working directory
+WORKDIR /workspace
+
+# Install system dependencies
+# Using --no-install-recommends is crucial here to keep the LaTeX installation lightweight
+# The apt cache is cleared in the same layer to minimize final image size
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
     texlive-latex-base \
     texlive-fonts-recommended \
     texlive-latex-extra \
     latexmk \
     && rm -rf /var/lib/apt/lists/*
 
-# set the working directory
-WORKDIR /workspace
+# Install uv and the base testing framework
+RUN pip install --no-cache-dir uv pytest pytest-mock
 
 # Keep the container lightweight; dependencies can be installed
 # dynamically by the agent if needed via pip inside the script.

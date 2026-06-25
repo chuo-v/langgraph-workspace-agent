@@ -68,7 +68,9 @@ async def lifespan(app: FastAPI):
 
     # 2. Docker
     try:
-        app.state.docker_client = docker.from_env()
+        # Socket timeout increased to 120s to allow long-running container.wait() calls
+        # to complete without severing the connection.
+        app.state.docker_client = docker.from_env(timeout=120)
         logger.info("Docker daemon connected.")
     except Exception as e:
         logger.warning(f"Could not connect to Docker daemon: {e}")
@@ -606,6 +608,12 @@ async def telegram_webhook(
     chat_id = str(message.get("chat", {}).get("id", ""))
     expected_chat_id = os.getenv("AUTHORIZED_OWNER_CHAT_ID")
 
+    # strict whitelisting
+    if not chat_id or chat_id != expected_chat_id:
+        logger.warning(f"Unauthorized chat ID detected: {chat_id}. Dropping payload.")
+        # return 200 OK so Telegram doesn't retry the delivery, but silently drop it
+        return {"status": "ok"}
+
     text = message.get("text", "").strip()
     caption = message.get("caption", "").strip()
 
@@ -624,12 +632,6 @@ async def telegram_webhook(
         )
         # Append cleanly whether they included a caption or not
         text = f"{text}\n\n{warning_msg}" if text else warning_msg
-
-    # strict whitelisting
-    if not chat_id or chat_id != expected_chat_id:
-        logger.warning(f"Unauthorized chat ID detected: {chat_id}. Dropping payload.")
-        # return 200 OK so Telegram doesn't retry the delivery, but silently drop it
-        return {"status": "ok"}
 
     # Pack dynamic IO clients
     io_deps = IODependencies(

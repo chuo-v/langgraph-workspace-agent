@@ -98,6 +98,7 @@ def _evaluate_single_case(item, lf: Langfuse, session_name: str) -> bool:
                     if isinstance(actual_val, str) and actual_val.strip().lower() in [
                         "null",
                         "none",
+                        "",
                     ]:
                         actual_val = None
 

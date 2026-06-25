@@ -253,8 +253,12 @@ def test_run_pytest_success_execution(setup_workspaces, mocker):
     # verify the command was constructed correctly
     mock_client.containers.run.assert_called_once()
     args, kwargs = mock_client.containers.run.call_args
-    assert "pytest" in kwargs["command"]
-    assert "test_logic.py" in kwargs["command"]
+
+    # Verify it uses the bash wrapper and the pytest command is in the executable string
+    assert kwargs["command"][0] == "/bin/bash"
+    assert kwargs["command"][1] == "-c"
+    assert "pytest" in kwargs["command"][2]
+    assert "test_logic.py" in kwargs["command"][2]
 
 
 def test_run_pytest_success_workspace_boundary_resolution(mocker, tmp_path):

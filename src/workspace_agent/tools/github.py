@@ -8,6 +8,19 @@ from git.exc import GitCommandError, InvalidGitRepositoryError
 
 from src.workspace_agent.tools.filesystem import get_allowed_paths, secure_resolve_path
 
+# ==========================================
+# Constants
+# ==========================================
+_GIT_CREDENTIAL_HELPER = (
+    '!f() { test "$1" = get && echo "username=x-access-token" '
+    '&& echo "password=$GITHUB_TOKEN"; }; f'
+)
+
+
+# ==========================================
+# Validation & Parsing Helpers
+# ==========================================
+
 
 def _sanitize_branch_name(branch_name: str | None) -> None:
     """Prevents Git Argument Injection by rejecting flags."""
@@ -68,22 +81,110 @@ def sync_repository(directory: str, target_branch: str = "main") -> str:
                 "push", "--include-untracked", "-m", "Auto-stashed by Workspace Agent before sync"
             )
 
-        repo_full_name = match.group(1)
+        # Suppress terminal prompts entirely, and use an inline credential helper guarded to only
+        # answer 'get' requests
+        with repo.git.custom_environment(
+            GITHUB_TOKEN=token, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="echo"
+        ):
+            c_flags = [
+                "-c",
+                "credential.helper=",
+                "-c",
+                f"credential.helper={_GIT_CREDENTIAL_HELPER}",
+            ]
+            git_bin = repo.git.GIT_PYTHON_GIT_EXECUTABLE
 
-        # configure the environment to use the token
-        with repo.git.custom_environment(GIT_ASKPASS="echo", GIT_TOKEN=token):
-            authenticated_url = f"https://{token}@github.com/{repo_full_name}.git"
-            repo.remotes.origin.set_url(authenticated_url)
-
-            try:
-                repo.git.checkout(target_branch)
-                repo.git.pull("--ff-only", "origin", target_branch)
-            finally:
-                # guarantee the URL is reset back to safe HTTPS even if the pull fails
-                safe_url = f"https://github.com/{repo_full_name}.git"
-                repo.remotes.origin.set_url(safe_url)
+            repo.git.checkout(target_branch)
+            repo.git.execute([git_bin] + c_flags + ["pull", "--ff-only", "origin", target_branch])
 
         return json.dumps({"status": "success", "branch": target_branch})
+
+    except InvalidGitRepositoryError:
+        return json.dumps({"status": "error", "reason": "not_a_git_repository"})
+    except GitCommandError as e:
+        return json.dumps({"status": "error", "reason": "git_command_failed", "details": str(e)})
+    except Exception as e:
+        return json.dumps({"status": "error", "reason": "unexpected_error", "details": str(e)})
+
+
+def _perform_git_checkout(
+    repo: Repo, commit_sha: str | None, pr_number: int | None, c_flags: list
+) -> dict:
+    """Helper to isolate the git fetch and checkout branching logic."""
+    git_bin = repo.git.GIT_PYTHON_GIT_EXECUTABLE
+
+    # 1. Prefer fetching via pr_number if available (universally safe for Forks)
+    if pr_number:
+        temp_branch = f"agent/ci-pr-{pr_number}"
+
+        repo.git.execute(
+            [git_bin]
+            + c_flags
+            + ["fetch", "origin", f"+refs/pull/{pr_number}/head:refs/heads/{temp_branch}"]
+        )
+
+        target_checkout = commit_sha if commit_sha else temp_branch
+        repo.git.checkout(target_checkout)
+
+        return {"status": "success", "commit": commit_sha or repo.head.commit.hexsha}
+
+    # 2. Fallback to origin fetch for triggers that lack a PR number
+    if commit_sha:
+        repo.git.execute([git_bin] + c_flags + ["fetch", "origin"])
+        repo.git.checkout(commit_sha)
+        return {"status": "success", "commit": commit_sha}
+
+    return {"status": "error", "reason": "missing_target"}
+
+
+def sync_to_commit(directory: str, commit_sha: str = None, pr_number: int = None) -> str:
+    """
+    Fetches from origin and checks out a specific commit or Pull Request safely.
+    Used primarily by the CI node to guarantee the tests run against the correct code.
+    """
+    if commit_sha and not re.match(r"^[0-9a-fA-F]+$", commit_sha):
+        return json.dumps({"status": "error", "reason": "invalid_commit_sha"})
+
+    try:
+        allowed = get_allowed_paths()
+        repo_path = secure_resolve_path(directory, allowed)
+        repo = Repo(repo_path)
+
+        token = os.getenv("GITHUB_TOKEN")
+        current_url = next(repo.remotes.origin.urls)
+        match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
+
+        error_reason = None
+        if not token:
+            error_reason = "missing_github_token"
+        elif not match:
+            error_reason = "invalid_github_url_format"
+
+        if error_reason:
+            return json.dumps({"status": "error", "reason": error_reason})
+
+        # Stash any dirty agent files to prevent accidental loss
+        if repo.is_dirty(untracked_files=True):
+            repo.git.stash(
+                "push",
+                "--include-untracked",
+                "-m",
+                "Auto-stashed by Workspace Agent before CI sync",
+            )
+
+        with repo.git.custom_environment(
+            GITHUB_TOKEN=token, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="echo"
+        ):
+            c_flags = [
+                "-c",
+                "credential.helper=",
+                "-c",
+                f"credential.helper={_GIT_CREDENTIAL_HELPER}",
+            ]
+
+            res = _perform_git_checkout(repo, commit_sha, pr_number, c_flags)
+
+        return json.dumps(res)
 
     except InvalidGitRepositoryError:
         return json.dumps({"status": "error", "reason": "not_a_git_repository"})
@@ -114,7 +215,6 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
         match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
         if not match:
             return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
-        repo_full_name = match.group(1)
 
         original_branch = repo.active_branch.name
 
@@ -140,18 +240,22 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
         # commit the changes
         repo.index.commit(commit_message)
 
-        # inject token and push
-        with repo.git.custom_environment(GIT_ASKPASS="echo", GIT_TOKEN=token):
-            authenticated_url = f"https://{token}@github.com/{repo_full_name}.git"
-            repo.remotes.origin.set_url(authenticated_url)
+        # Inject token dynamically and apply configuration directly to the push command
+        with repo.git.custom_environment(
+            GITHUB_TOKEN=token, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="echo"
+        ):
+            c_flags = [
+                "-c",
+                "credential.helper=",
+                "-c",
+                f"credential.helper={_GIT_CREDENTIAL_HELPER}",
+            ]
+            git_bin = repo.git.GIT_PYTHON_GIT_EXECUTABLE
 
-            try:
-                origin = repo.remote(name="origin")
-                repo.git.push("--set-upstream", origin, new_branch)
-            finally:
-                # guarantee the URL is scrubbed after pushing
-                safe_url = f"https://github.com/{repo_full_name}.git"
-                repo.remotes.origin.set_url(safe_url)
+            origin = repo.remote(name="origin")
+            repo.git.execute(
+                [git_bin] + c_flags + ["push", "--set-upstream", origin.name, new_branch]
+            )
 
         return json.dumps({"status": "success", "branch": new_branch, "message": commit_message})
 
@@ -162,7 +266,12 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
 
 
 def open_pull_request(
-    directory: str, title: str, head_branch: str, base_branch: str = "main", body: str = ""
+    directory: str,
+    title: str,
+    head_branch: str,
+    base_branch: str = "main",
+    body: str = "",
+    repo_full_name: str = None,
 ) -> str:
     """
     Opens a Pull Request via the GitHub REST API using the GITHUB_TOKEN environment variable.
@@ -176,11 +285,11 @@ def open_pull_request(
     if not token:
         return json.dumps({"status": "error", "reason": "missing_github_token"})
 
-    repo_full_name = _get_repo_full_name(directory)
-    if not repo_full_name:
+    repo_name = repo_full_name or _get_repo_full_name(directory)
+    if not repo_name:
         return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
-    url = f"https://api.github.com/repos/{repo_full_name}/pulls"
+    url = f"https://api.github.com/repos/{repo_name}/pulls"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -210,7 +319,9 @@ def open_pull_request(
         return json.dumps({"status": "error", "reason": "unexpected_error", "details": str(e)})
 
 
-def update_pull_request(directory: str, pr_number: int, title: str = None, body: str = None) -> str:
+def update_pull_request(
+    directory: str, pr_number: int, title: str = None, body: str = None, repo_full_name: str = None
+) -> str:
     """
     Updates the title and/or body of an existing GitHub Pull Request.
     """
@@ -220,11 +331,11 @@ def update_pull_request(directory: str, pr_number: int, title: str = None, body:
             {"status": "error", "reason": "Missing GITHUB_TOKEN environment variable."}
         )
 
-    repo_full_name = _get_repo_full_name(directory)
-    if not repo_full_name:
+    repo_name = repo_full_name or _get_repo_full_name(directory)
+    if not repo_name:
         return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
-    url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}"
+    url = f"https://api.github.com/repos/{repo_name}/pulls/{pr_number}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -340,7 +451,9 @@ def get_git_diff_blueprint(directory: str, target_branch: str = None) -> str:
         return f"Error retrieving git blueprint: {e}"
 
 
-def comment_on_pull_request(directory: str, pr_number: int, body: str) -> str:
+def comment_on_pull_request(
+    directory: str, pr_number: int, body: str, repo_full_name: str = None
+) -> str:
     """
     Posts a Markdown comment on an existing GitHub Pull Request.
     """
@@ -348,12 +461,12 @@ def comment_on_pull_request(directory: str, pr_number: int, body: str) -> str:
     if not token:
         return json.dumps({"status": "error", "reason": "missing_github_token"})
 
-    repo_full_name = _get_repo_full_name(directory)
-    if not repo_full_name:
+    repo_name = repo_full_name or _get_repo_full_name(directory)
+    if not repo_name:
         return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
     # PR comments use the issues endpoint in the GitHub REST API
-    url = f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments"
+    url = f"https://api.github.com/repos/{repo_name}/issues/{pr_number}/comments"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -383,7 +496,12 @@ def comment_on_pull_request(directory: str, pr_number: int, body: str) -> str:
 
 
 def set_commit_status(
-    directory: str, commit_sha: str, state: str, context_str: str, description: str = ""
+    directory: str,
+    commit_sha: str,
+    state: str,
+    context_str: str,
+    description: str = "",
+    repo_full_name: str = None,
 ) -> str:
     """
     Sets the CI status (pending, success, error, failure) of a commit via the GitHub REST API.
@@ -392,11 +510,11 @@ def set_commit_status(
     if not token:
         return json.dumps({"status": "error", "reason": "missing_github_token"})
 
-    repo_full_name = _get_repo_full_name(directory)
-    if not repo_full_name:
+    repo_name = repo_full_name or _get_repo_full_name(directory)
+    if not repo_name:
         return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
 
-    url = f"https://api.github.com/repos/{repo_full_name}/statuses/{commit_sha}"
+    url = f"https://api.github.com/repos/{repo_name}/statuses/{commit_sha}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
