@@ -230,7 +230,7 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
         repo.git.add(A=True)
 
         # check if there is actually anything to commit
-        if repo.index.diff("HEAD"):
+        if not repo.index.diff("HEAD"):
             repo.git.checkout(original_branch)
             # only delete the branch if we just created it (don't delete existing PR branches)
             if not branch_existed:
