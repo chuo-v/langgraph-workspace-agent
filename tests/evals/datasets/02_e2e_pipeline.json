@@ -121,5 +121,27 @@
         }
       }
     ]
+  },
+  {
+    "case_id": "e2e_pytest_self_correction",
+    "description": "Tests the agent's ability to execute a pytest suite, catch test failures, self-correct the source code, and successfully re-execute the tests before opening a PR.",
+    "turns": [
+      {
+        "step": 1,
+        "input_type": "human_message",
+        "input": "/standard In the langgraph-workspace-agent-sandbox repo, run pytest on `test_math.py`. It currently fails because the `add` function in `math_utils.py` is incorrectly subtracting instead of adding. Please run the test to see the failure, fix the issue in `math_utils.py`, verify the fix by running pytest again, and open a PR.",
+        "expected_interrupt": "human_pr_node",
+        "expected_tool_calls": [
+          "run_pytest",
+          "run_pytest"
+        ],
+        "expected_state": {
+          "intent_category": "workspace_operation",
+          "pending_pr_url": "__NOT_NULL__",
+          "human_approved": false,
+          "is_aborted": false
+        }
+      }
+    ]
   }
 ]
