@@ -415,6 +415,17 @@ def test_route_after_human_clarify_fallback_workspace():
 # ==========================================
 
 
+def test_route_after_llm_success_tool_calls():
+    """Green Path: LLM generates tool calls, direct graph to execute them."""
+    state = {
+        "is_aborted": False,
+        "messages": [
+            AIMessage(content="", tool_calls=[{"name": "read_files", "args": {}, "id": "1"}])
+        ],
+    }
+    assert route_after_llm(state) == "workspace_tools"
+
+
 def test_route_after_llm_fallback_missing_tools():
     """Edge Path: LLM responds without tool calls during an operation. Force retry."""
     state = {
@@ -427,8 +438,8 @@ def test_route_after_llm_fallback_missing_tools():
     assert route_after_llm(state) == "force_tool_retry"
 
 
-def test_route_after_llm_success_no_tools_max_retries(mocker):
-    """Green Path: Retries exhausted, proceed to evaluation/execution logic."""
+def test_route_after_llm_fallback_no_tools_max_retries(mocker):
+    """Edge Path: Retries exhausted, proceed to evaluation/execution logic."""
     mocker.patch(
         "src.workspace_agent.orchestrator.graph.settings",
         mocker.Mock(agent=mocker.Mock(max_sandbox_retries=3)),
@@ -443,8 +454,8 @@ def test_route_after_llm_success_no_tools_max_retries(mocker):
     assert route_after_llm(state) == "pull_request_subgraph"
 
 
-def test_route_after_llm_success_read_only_no_tools():
-    """Green Path: Read-only tasks without tools safely delegate to evaluation logic."""
+def test_route_after_llm_fallback_read_only_no_tools():
+    """Edge Path: Read-only tasks without tools safely delegate to evaluation logic."""
     state = {
         "is_aborted": False,
         "intent_category": "workspace_read_only",
@@ -453,17 +464,6 @@ def test_route_after_llm_success_read_only_no_tools():
     }
     # Read-only bypasses tool retries -> delegates to route_after_execution -> update_memory
     assert route_after_llm(state) == "update_memory"
-
-
-def test_route_after_llm_success_tool_calls():
-    """Green Path: LLM generates tool calls, direct graph to execute them."""
-    state = {
-        "is_aborted": False,
-        "messages": [
-            AIMessage(content="", tool_calls=[{"name": "read_files", "args": {}, "id": "1"}])
-        ],
-    }
-    assert route_after_llm(state) == "workspace_tools"
 
 
 def test_route_after_llm_fallback_empty_messages():
