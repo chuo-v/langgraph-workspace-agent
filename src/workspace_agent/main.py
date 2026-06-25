@@ -68,7 +68,9 @@ async def lifespan(app: FastAPI):
 
     # 2. Docker
     try:
-        app.state.docker_client = docker.from_env()
+        # Socket timeout increased to 120s to allow long-running container.wait() calls
+        # to complete without severing the connection.
+        app.state.docker_client = docker.from_env(timeout=120)
         logger.info("Docker daemon connected.")
     except Exception as e:
         logger.warning(f"Could not connect to Docker daemon: {e}")

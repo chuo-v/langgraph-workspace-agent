@@ -55,6 +55,7 @@ MAX_CONTEXT_LENGTH = 500
 MAX_DIFF_LENGTH = 40000
 MAX_CONSECUTIVE_TOOL_STEPS = 30
 MAX_GITHUB_COMMENT_LENGTH = 60000
+MAX_FAST_PATH_LEN = 15
 
 
 # ==========================================
@@ -168,6 +169,64 @@ def _check_circuit_breaker(messages: list) -> dict | None:
     return None
 
 
+def _get_latest_human_instruction(messages: list, fallback: str) -> str:
+    """Extracts the absolute latest user feedback, explicitly ignoring system traps."""
+    latest_human_msg = next(
+        (
+            m.content
+            for m in reversed(messages)
+            if m.type == "human"
+            and not str(m.content).startswith("SYSTEM REJECTION")
+            and not str(m.content).startswith("SYSTEM ERROR")
+        ),
+        "",
+    )
+    return latest_human_msg if latest_human_msg else fallback
+
+
+def _check_conversational_fast_path(clean_instruction: str) -> bool:
+    """
+    Fast-path for simple conversational declines/acknowledgments to prevent
+    router confusion (e.g., when the user says "No" to an AI-generated
+    question that wasn't a formal tool interrupt).
+    """
+    quick_responses = {
+        "no",
+        "nope",
+        "nah",
+        "stop",
+        "done",
+        "thanks",
+        "thank you",
+        "no thanks",
+        "goodbye",
+        "bye",
+        "ok",
+        "okay",
+    }
+    check_str = re.sub(r"[^a-zA-Z\s]", "", clean_instruction.strip()).strip().lower()
+    return len(check_str) < MAX_FAST_PATH_LEN and check_str in quick_responses
+
+
+def _build_recent_context(messages: list) -> str:
+    """Builds a truncated sliding window of the conversation history."""
+    if not messages or len(messages) <= 1:
+        return ""
+
+    recent_msgs = messages[-4:]
+    history_lines = []
+
+    for m in recent_msgs:
+        content_str = str(m.content)
+        if len(content_str) > MAX_CONTEXT_LENGTH:
+            content_str = content_str[:MAX_CONTEXT_LENGTH] + "... [TRUNCATED FOR ROUTING]"
+        speaker = "User" if m.type == "human" else "Agent"
+        history_lines.append(f"{speaker}: {content_str}")
+
+    context_str = "\n".join(history_lines)
+    return f"\nRecent Conversation Context:\n{context_str}\n"
+
+
 def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
     """
     Tier 1 Routing Node with Escalation.
@@ -175,45 +234,47 @@ def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
     Uses limited recent message history to handle conversational follow-ups naturally.
     """
     config = config or {}
-    instruction = state.get("original_instruction", "")
 
-    # extract the command and clean the instruction immediately
-    clean_instruction, has_frontier_override, has_standard_override, requested_model = (
-        _extract_tier_command(instruction)
+    instruction = _get_latest_human_instruction(
+        state.get("messages", []), state.get("original_instruction", "")
     )
 
-    # Build conversational context sliding window for the payload
-    context_block = ""
-    if state.get("messages") and len(state["messages"]) > 1:
-        # grab the last 4 messages (2 conversational turns)
-        recent_msgs = state["messages"][-4:]
-        history_lines = []
+    clean_instruction, has_frontier, has_standard, requested_model = _extract_tier_command(
+        instruction
+    )
 
-        for m in recent_msgs:
-            # Aggressively truncate history to prevent context poisoning from long responses
-            content_str = str(m.content)
-            if len(content_str) > MAX_CONTEXT_LENGTH:
-                content_str = content_str[:MAX_CONTEXT_LENGTH] + "... [TRUNCATED FOR ROUTING]"
-            speaker = "User" if m.type == "human" else "Agent"
-            history_lines.append(f"{speaker}: {content_str}")
+    # 1. Fast-Path Bypass
+    if _check_conversational_fast_path(clean_instruction):
+        state_update = {
+            "intent_category": "conversational",
+            "inferred_workspace": None,
+            "workspace_absolute_path": None,
+            "target_branch": None,
+            "router_confidence": 1.0,
+            "force_frontier_tier": False,
+            "force_standard_tier": False,
+            "requested_model": requested_model,
+            "clarification_question": None,
+            "t1_base_calls": state.get("t1_base_calls", 0),
+        }
+        if has_frontier or has_standard or requested_model:
+            state_update["original_instruction"] = clean_instruction
+            if state.get("messages") and state["messages"][-1].type == "human":
+                updated_message = HumanMessage(
+                    content=clean_instruction, id=state["messages"][-1].id
+                )
+                state_update["messages"] = [updated_message]
+        return state_update
 
-        context_str = "\n".join(history_lines)
-        context_block = f"\nRecent Conversation Context:\n{context_str}\n"
-
-    # Package the variables into a generic dictionary payload for the unified chain
+    # 2. Build Payload
     payload = {
         "instruction": clean_instruction,
-        "recent_context": context_block,
+        "recent_context": _build_recent_context(state.get("messages", [])),
     }
 
-    # dynamically set the initial routing tier based on human overrides
-    if has_frontier_override:
-        initial_tier = TIER_FRONTIER
-    elif has_standard_override:
-        initial_tier = TIER_STANDARD
-    else:
-        initial_tier = TIER_BASE
+    initial_tier = TIER_FRONTIER if has_frontier else (TIER_STANDARD if has_standard else TIER_BASE)
 
+    # 3. Escalate & Route
     decision, latest_error = _invoke_escalating_router(payload, initial_tier, config)
 
     if not decision:
@@ -229,26 +290,22 @@ def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
             "is_aborted": True,
         }
 
-    # resolve the inferred workspace friendly name to its absolute path from config.yaml
+    # 4. Resolve Context & Workspace State
     absolute_path = None
     target_branch = None
 
     if decision.inferred_workspace and decision.inferred_workspace in settings.workspaces:
         workspace_config = settings.workspaces[decision.inferred_workspace]
         absolute_path = workspace_config.path
-        # use the workspace override if it exists, otherwise use the global default
         target_branch = workspace_config.target_branch or settings.agent.target_branch
 
-    # trap the new CoT context missing flag
     clarification_question = None
     if decision.is_context_missing and decision.clarification_question_to_ask:
         clarification_question = decision.clarification_question_to_ask
-        # force path to None so the graph strictly routes to the clarify node
         absolute_path = None
 
-    # determine the execution tier based on user override OR autonomous triage
-    force_frontier = has_frontier_override or (decision.task_complexity == "high")
-    force_standard = (has_standard_override and not has_frontier_override) or (
+    force_frontier = has_frontier or (decision.task_complexity == "high")
+    force_standard = (has_standard and not has_frontier) or (
         not force_frontier and (decision.task_complexity == "medium")
     )
 
@@ -260,20 +317,16 @@ def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
         "router_confidence": decision.router_confidence,
         "force_frontier_tier": force_frontier,
         "force_standard_tier": force_standard,
-        "requested_model": requested_model,  # <--- INJECT MODEL
+        "requested_model": requested_model,
         "clarification_question": clarification_question,
         "t1_base_calls": state.get("t1_base_calls", 0) + 1,
     }
 
-    # overwrite the original instruction in the state if we stripped the command
-    if has_frontier_override or has_standard_override or requested_model:
+    if has_frontier or has_standard or requested_model:
         state_update["original_instruction"] = clean_instruction
-
-        if state.get("messages"):
-            last_message = state["messages"][-1]
-            if last_message.type == "human":
-                updated_message = HumanMessage(content=clean_instruction, id=last_message.id)
-                state_update["messages"] = [updated_message]
+        if state.get("messages") and state["messages"][-1].type == "human":
+            updated_message = HumanMessage(content=clean_instruction, id=state["messages"][-1].id)
+            state_update["messages"] = [updated_message]
 
     return state_update
 
@@ -285,8 +338,27 @@ def conversational_reply_node(state: AgentState, config: RunnableConfig = None) 
     llm = get_execution_llm(
         requested_tier=TIER_BASE, requested_model_key=state.get("requested_model")
     )
-    response = llm.invoke(state["messages"], config=config)
-    return {"messages": [response], "t1_base_calls": state.get("t1_base_calls", 0) + 1}
+
+    # Inject a system prompt to guide the conversational response and prevent hallucination
+    system_prompt = SystemMessage(
+        content=(
+            "You are a helpful AI workspace assistant. Respond to the user's conversational "
+            "message concisely. If the user is declining further assistance, saying goodbye, "
+            "or acknowledging completion, respond politely and terminate the interaction. "
+            "Do NOT hallucinate or simulate tool outputs, logs, or test results."
+        )
+    )
+
+    # Prepend the system prompt dynamically without permanently saving it to state
+    messages_to_send = [system_prompt] + state.get("messages", [])
+
+    response = llm.invoke(messages_to_send, config=config)
+
+    return {
+        "messages": [response],
+        "t1_base_calls": state.get("t1_base_calls", 0) + 1,
+        "is_busy": False,  # Ensure the workflow is safely unlocked for the next task
+    }
 
 
 def clarification_node(state: AgentState) -> dict:
