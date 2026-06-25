@@ -1093,10 +1093,17 @@ def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:  
     original_instruction = state.get("original_instruction", "")
     instruction_context = latest_human_msg if latest_human_msg else original_instruction
 
+    # Extract the agent's final summary from the message history
+    agent_summary = next(
+        (str(m.content) for m in reversed(messages) if isinstance(m, AIMessage) and m.content),
+        "No summary provided.",
+    )
+
     critic_prompt = PromptManager.get(
         "evaluation",
         "critic_prompt",
         instruction_context=instruction_context,
+        agent_summary=agent_summary,
         raw_diff=raw_diff if not is_empty_diff else "[NO CUMULATIVE CHANGES TO REPOSITORY]",
         incremental_diff=incremental_diff
         if not is_empty_incremental
