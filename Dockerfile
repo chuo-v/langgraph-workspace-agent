@@ -1,26 +1,29 @@
 FROM python:3.11-slim
 
-# install system dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
     docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# to bypass "dubious ownership" block for mounted volumes
+# Fix directory ownership for the mounted workspace
 RUN git config --global --add safe.directory '*'
 
-# set working directory for the application
+# Set working directory for the application
 WORKDIR /app
 
-# install dependencies first to leverage Docker layer caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install uv for high-speed package resolution
+RUN pip install --no-cache-dir uv
 
-# copy application source code
+# Copy requirements and install via uv
+COPY requirements.txt .
+RUN uv pip install --system --no-cache-dir -r requirements.txt
+
+# Copy source code
 COPY src/ ./src/
 
-# expose standard FastAPI port
+# Expose standard FastAPI port
 EXPOSE 8000
 
-# start uvicorn server binding to all internal container interfaces
+# Start uvicorn server binding to all internal container interfaces
 CMD ["uvicorn", "src.workspace_agent.main:app", "--host", "0.0.0.0", "--port", "8000"]
