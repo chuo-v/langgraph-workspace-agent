@@ -113,23 +113,30 @@ def run_python_script(script_path: str, config: RunnableConfig) -> str:
             tmpfs=secure_tmpfs,
             working_dir="/workspace",
             detach=True,
-            remove=False,  # Remove manually after grabbing the logs
+            remove=False,
             network="sandbox_net",
-            mem_limit="512m",
-            nano_cpus=1000000000,
+            mem_limit="4g",
+            nano_cpus=4000000000,
         )
 
-        # Wait for execution to finish (with a strict timeout)
-        result = container.wait(timeout=30)
-        logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+        try:
+            result = container.wait(timeout=30)
+            logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+            status_code = result.get("StatusCode", "UNKNOWN")
+        except Exception:
+            logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+            status_code = "TIMEOUT"
+        finally:
+            # Guarantee container destruction to release file locks
+            container.remove(force=True)
 
         # Prevent context blowout
         logs = _truncate_logs(logs)
 
-        # Cleanup
-        container.remove(force=True)
+        if status_code == "TIMEOUT":
+            return f"Error: Script Execution Timed Out after 30s.\n\nPartial Logs:\n{logs}"
 
-        return f"Execution Finished (Exit Code: {result['StatusCode']})\n\nOutput:\n{logs}"
+        return f"Execution Finished (Exit Code: {status_code})\n\nOutput:\n{logs}"
 
     except docker.errors.APIError as e:
         return f"Docker API Error: {str(e)}"
@@ -170,20 +177,27 @@ def compile_latex_document(tex_file_path: str, config: RunnableConfig) -> str:
             detach=True,
             remove=False,
             network="sandbox_net",
-            mem_limit="512m",
-            nano_cpus=1000000000,
+            mem_limit="4g",
+            nano_cpus=4000000000,
         )
 
-        # LaTeX compilation can take slightly longer, so timeout is 60s
-        result = container.wait(timeout=60)
-        logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+        try:
+            result = container.wait(timeout=60)
+            logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+            status_code = result.get("StatusCode", "UNKNOWN")
+        except Exception:
+            logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+            status_code = "TIMEOUT"
+        finally:
+            container.remove(force=True)
 
         # Prevent context blowout (LaTeX tracebacks are notoriously long, keep more tail lines)
         logs = _truncate_logs(logs)
 
-        container.remove(force=True)
+        if status_code == "TIMEOUT":
+            return f"Error: Compilation Timed Out after 60s.\n\nPartial Logs:\n{logs}"
 
-        return f"Compilation Finished (Exit Code: {result['StatusCode']})\n\nCompiler Logs:\n{logs}"
+        return f"Compilation Finished (Exit Code: {status_code})\n\nCompiler Logs:\n{logs}"
 
     except docker.errors.APIError as e:
         return f"Docker API Error: {str(e)}"
@@ -214,13 +228,13 @@ def _build_pytest_command(workspace_root: Path, rel_path: str) -> str:
     """Helper to dynamically detect and build dependency setup and pytest commands."""
     setup_cmds = []
     if (workspace_root / "requirements.txt").exists():
-        setup_cmds.append("pip install --quiet -r requirements.txt")
+        setup_cmds.append("uv pip install -v --system -r requirements.txt")
     if (workspace_root / "requirements-dev.txt").exists():
-        setup_cmds.append("pip install --quiet -r requirements-dev.txt")
+        setup_cmds.append("uv pip install -v --system -r requirements-dev.txt")
 
     # Fallback for standard Python packages if no requirements.txt exists
     if not setup_cmds and (workspace_root / "pyproject.toml").exists():
-        setup_cmds.append("pip install --quiet .")
+        setup_cmds.append("uv pip install -v --system .")
 
     # Combine setup commands with the pytest execution
     if setup_cmds:
@@ -263,23 +277,28 @@ def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
             detach=True,
             remove=False,
             network="sandbox_net",
-            mem_limit="512m",
-            nano_cpus=1000000000,
+            mem_limit="4g",
+            nano_cpus=4000000000,
         )
 
-        # Wait for execution to finish
-        result = container.wait(timeout=180)
-        logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+        try:
+            result = container.wait(timeout=180)
+            logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+            status_code = result.get("StatusCode", "UNKNOWN")
+        except Exception:
+            # Trap the timeout exception to explicitly grab the logs before killing it
+            logs = container.logs(stdout=True, stderr=True).decode("utf-8")
+            status_code = "TIMEOUT"
+        finally:
+            container.remove(force=True)
 
         # Prevent context blowout
         logs = _truncate_logs(logs)
 
-        # Cleanup
-        container.remove(force=True)
+        if status_code == "TIMEOUT":
+            return f"Error: Pytest Execution Timed Out after 580s.\n\nPartial Test Logs:\n{logs}"
 
-        return (
-            f"Pytest Execution Finished (Exit Code: {result['StatusCode']})\n\nTest Logs:\n{logs}"
-        )
+        return f"Pytest Execution Finished (Exit Code: {status_code})\n\nTest Logs:\n{logs}"
 
     except docker.errors.APIError as e:
         return f"Docker API Error: {str(e)}"
