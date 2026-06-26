@@ -10,7 +10,7 @@ An autonomous, FastAPI-based orchestrator that securely manages local repositori
 
 ## 🎬 See it in Action
 
-https://github.com/user-attachments/assets/1b64a5cb-bff1-4b6b-9041-70ef6ea73df4
+https://github.com/user-attachments/assets/20ca269a-5c42-4dce-b3fb-cfc62e2434fa
 
 *Check out the Pull Requests autonomously generated in this demo:*
 * **Scenario 1:** [langgraph-workspace-agent#17](https://github.com/chuo-v/langgraph-workspace-agent/pull/17)
