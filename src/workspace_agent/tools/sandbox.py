@@ -296,7 +296,7 @@ def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
         logs = _truncate_logs(logs)
 
         if status_code == "TIMEOUT":
-            return f"Error: Pytest Execution Timed Out after 580s.\n\nPartial Test Logs:\n{logs}"
+            return f"Error: Pytest Execution Timed Out after 180s.\n\nPartial Test Logs:\n{logs}"
 
         return f"Pytest Execution Finished (Exit Code: {status_code})\n\nTest Logs:\n{logs}"
 
