@@ -17,8 +17,6 @@ https://github.com/user-attachments/assets/1b64a5cb-bff1-4b6b-9041-70ef6ea73df4
 
 ---
 
----
-
 ## 🎯 Design Goals & Core Capabilities
 
 This agent is engineered to solve the security, cost-efficiency, and mobility constraints inherent to local-first repository engineering—challenges that traditional developer interfaces or transient chat wrappers often leave unaddressed.
