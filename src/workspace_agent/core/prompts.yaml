@@ -62,6 +62,9 @@ evaluation:
     USER REQUEST:
     {instruction_context}
 
+    AGENT SUMMARY OF WORK:
+    {agent_summary}
+
     CUMULATIVE PR GIT DIFF (Against Base Branch):
     {raw_diff}
 
@@ -73,6 +76,7 @@ evaluation:
     - For explicit instructions (e.g., 'change X to Y'), verify the git diff shows those exact changes.
     - If the user asks to REVERT a previous change, the change might disappear from the CUMULATIVE PR DIFF. In this case, you MUST check the INCREMENTAL WORKING DIRECTORY DIFF to verify the agent actually performed the revert.
     - For open-ended or creative instructions (e.g., 'polish this', 'refactor this'), verify that the modifications reasonably align with the requested goal.
+    - PROCEDURAL RULE: If the user request included procedural commands (like "run tests", "search for files", "figure out what's failing"), look at the AGENT SUMMARY OF WORK for evidence that these were completed. DO NOT penalize or fail the diff if it lacks evidence of test execution, as terminal commands do not appear in git diffs.
     - If both git diffs are empty, it is ONLY acceptable if the files were ALREADY in the requested state, or if the user merely asked a question without requesting changes.
     - DO NOT accept 'placeholder' changes if the user provided specific values.
 

@@ -14,16 +14,21 @@ The Tier 1 routing node evaluates your input to decide if you are asking a gener
 ### 2. Disambiguation (Human-in-the-Loop)
 If your request is ambiguous (e.g., *"Fix the typo in the README"* when you have three configured workspaces), the agent's graph suspends execution. It will send a Telegram message listing your available workspaces or matching files and wait for you to reply with a clarification before proceeding.
 
+### 3. File Attachments (Text-Based Context)
+The agent supports reading text-based file attachments directly from the Telegram chat (e.g., logs, scripts, or PDFs) to inject additional context into the execution loop. Note that while the Telegram app allows you to send multiple files at once, **the agent gateway is designed to process only one attached file per prompt turn**. To ensure the attached context binds correctly to your instruction without triggering concurrency locks, please send files individually rather than in a multi-document batch.
+
 ## Explicit Execution Tier Overrides
 
 While the router automatically assesses `task_complexity` and escalates to higher tiers autonomously, you maintain ultimate manual control over the compute tier used for the execution loop.
 
-You can force the agent to use a specific model tier by appending a flag anywhere in your Telegram message. The parser strips the flag cleanly before passing the instruction to the LLM.
+You can force the agent to use a specific model tier by appending a unified `/use:` flag anywhere in your Telegram message. The parser strips the flag cleanly before passing the instruction to the LLM.
 
-* `/standard` **Flag:** Forces the orchestrator to use the Tier 2 API (e.g., DeepSeek). Best for moderate tasks spanning multiple files.
-  > *"Update the telemetry counters in the routing node /standard"*
-* `/frontier` **Flag:** Forces the orchestrator to use the Tier 3 API (e.g., Gemini 1.5 Pro or Claude 3.5 Sonnet). Reserved for complex architectural refactors or highly abstract reasoning.
-  > *"Refactor the entire GitHub webhook integration to use Pydantic models for payload validation instead of raw dicts /frontier"*
+* `/use:standard` **Flag:** Forces the orchestrator to use the Tier 2 API (e.g., DeepSeek). Best for moderate tasks spanning multiple files.
+  > *"Update the telemetry counters in the routing node /use:standard"*
+* `/use:frontier` **Flag:** Forces the orchestrator to use the Tier 3 API (e.g., Gemini 1.5 Pro or Claude 3.5 Sonnet). Reserved for complex architectural refactors or highly abstract reasoning.
+  > *"Refactor the entire GitHub webhook integration to use Pydantic models for payload validation instead of raw dicts /use:frontier"*
+* `/use:model_alias` **Flag:** Bypasses the tier logic entirely to explicitly lock execution to a specific model alias mapped in your `config.yaml`.
+  > *"Translate these comments to Japanese /use:gemini_pro"*
 
 *(Note: If you do not provide a flag, the system defaults to Tier 1 unless the internal router flags the prompt as highly complex.)*
 
@@ -52,14 +57,13 @@ Before it even considers touching your Git history, the agent runs a **Reflectio
 Once the critic approves the changes:
 1. **Map-Reduce Summarization:** For large changes, the agent chunks the git diff and uses a map-reduce pipeline to generate a highly semantic PR title and description.
 2. **Branch & Commit:** It commits the changes locally to a generated branch (e.g., `agent/add-retry-logic-a1b2`).
-3. **Push & Notify:** It pushes the branch, opens the GitHub Pull Request, and pings your Telegram with the URL.
+3. **Push & Notify:** It pushes the branch, opens the GitHub Pull Request, and pings your chat with the URL.
    > *"✅ **Execution Complete.** I have pushed the changes to a new branch and opened a Pull Request for your review: [🔗 Link]"*
 
 ### Phase 4: Agentic CI/CD & Iteration
 1. **Test Execution:** If you configured `ci_suites` in your `config.yaml`, the agent automatically runs those shell commands in a sandboxed subprocess.
 2. **Status Checks:** It posts the Pass/Fail results directly to the GitHub PR via the REST API, including collapsible logs in a PR comment.
-3. **Human Iteration:** You can review the PR on your phone. If you want changes, simply reply in Telegram (e.g., *"Change the timeout from 30s to 60s"*). The agent uses the `active_agent_branch`, applies the fix, and silently patches the existing PR.
+3. **Human Iteration:** You can review the PR on your phone. If you want changes, simply reply in the chat (e.g., *"Change the timeout from 30s to 60s"*). The agent uses the `active_agent_branch`, applies the fix, and silently patches the existing PR.
 
 ### Phase 5: Cleanup
-Once you manually merge the Pull Request via the GitHub UI, you can reply in Telegram: *"Merged!"*
-The agent's `pr_merged_node` activates, cleanly resetting your local host machine back to the main branch and safely deleting the temporary agent branch to prevent repository clutter.
+Once you manually merge the Pull Request via the GitHub UI, the configured GitHub webhook autonomously notifies the agent. The agent's `pr_merged_node` activates in the background, cleanly resetting your local host machine back to the target branch and safely deleting the temporary agent branch to prevent repository clutter. Once the cleanup is complete, the agent will send a final confirmation message in the chat.

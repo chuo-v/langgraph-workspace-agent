@@ -56,31 +56,47 @@ chmod 600 .env
 Open the `.env` file and populate the necessary credentials:
 
 1. **Infrastructure Secrets (Docker Compose):**
-
 * You must generate secure passwords for the persistent databases and Langfuse UI sessions to prevent unauthorized internal access.
 * Run `openssl rand -hex 32` in your terminal to generate safe, alphanumeric strings for `POSTGRES_PASSWORD`, `CLICKHOUSE_PASSWORD`, and `MINIO_ROOT_PASSWORD`.
 * Run `openssl rand -base64 32` in your terminal to generate cryptographic session keys for `LANGFUSE_NEXTAUTH_SECRET` and `LANGFUSE_SALT`.
 
-2. **Telegram Credentials:**
 
+2. **Telegram Credentials:**
 * Message `@BotFather` on Telegram, create a new bot, and retrieve the **HTTP API Token**.
 * Send a message to your new bot, then visit `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` to find your personal `chat.id`. Set this as your `AUTHORIZED_OWNER_CHAT_ID` to strictly whitelist your account.
 * Create a custom `TELEGRAM_SECRET_TOKEN` (e.g., using `openssl rand -hex 16`) to cryptographically verify incoming webhook payloads.
 
-3. **GitHub Integrations:**
 
+3. **GitHub Integrations:**
+* Provide your account handle in `GITHUB_USERNAME`.
 * Navigate to GitHub Developer Settings and generate a Fine-Grained Personal Access Token (`GITHUB_TOKEN`).
 * Grant it `Read and Write` permissions for **Contents** (to push branches) and **Pull Requests** (to open PRs). Limit its scope *only* to the repositories the agent is allowed to touch.
 * Create a custom `GITHUB_WEBHOOK_SECRET` for validating repository event webhooks.
 * **Webhook Noise Mitigation:** When setting up the actual webhook on your GitHub repository settings, select **"Let me select individual events"** and check *only* **Pull requests** and **Issue comments**. Leaving it on the default "Send me everything" will cause GitHub to blast payloads for every minor repository event (stars, branch pushes, etc.), which will needlessly flood your agent's server logs.
 
 4. **LLM Tiering:**
+* Define your `STANDARD_PROVIDER` (e.g., `deepseek` or `openai`) and `FRONTIER_PROVIDER` (e.g., `anthropic` or `gemini`).
+* Add your corresponding API keys (e.g., `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`).
+* *Note:* Tier 1 relies entirely on your local `OLLAMA_API_BASE` and requires no keys.
 
-* Add your API keys for your preferred standard (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`) and frontier (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`) routing engines.
 
-5. **Observability (Langfuse Local Stack):**
+5. **Filesystem & State Configuration:**
+* Set `HOST_WORKSPACE_DIR` to the absolute path on your host machine where your repositories are stored (e.g., `/Users/username/git`). This directory is mounted symmetrically into the agent container.
+* Optionally define `WORKSPACE_AGENT_CONFIG_PATH` and `WORKSPACE_AGENT_STATE_DIR` if you want to store your `config.yaml` and state profiles outside the default repository directory.
 
+
+6. **Sandbox Security & Airgap:**
+* The ephemeral sandboxes allow outbound DNS to resolve package managers. Set `TRUSTED_DNS_PRIMARY` and `TRUSTED_DNS_SECONDARY` if you operate behind a strict corporate firewall or need specific resolvers instead of the defaults (1.1.1.1 / 9.9.9.9).
+
+
+7. **Docker Socket Permissions (Linux Only):**
+* If running natively on Linux, the orchestrator needs permission to communicate with the host's Docker daemon. Un-comment and set `GATEWAY_USER` to your user's UID and the host's 'docker' group GID (e.g., `"1000:999"`). Leave this blank if using macOS or Windows.
+
+
+8. **Observability (Langfuse Local Stack):**
 * Leave `LANGFUSE_SECRET_KEY` and `LANGFUSE_PUBLIC_KEY` blank for now. You will generate these from your local dashboard during Step 5.
+
+
 
 ## Step 4: Network Ingress (Webhooks & Tunneling)
 
