@@ -6,6 +6,19 @@ An autonomous, FastAPI-based orchestrator that securely manages local repositori
 
 ---
 
+## 🎬 See it in Action
+
+https://github.com/user-attachments/assets/1b64a5cb-bff1-4b6b-9041-70ef6ea73df4
+
+*Check out the Pull Requests autonomously generated in this demo:*
+* **Scenario 1:** [langgraph-workspace-agent#17](https://github.com/chuo-v/langgraph-workspace-agent/pull/17)
+* **Scenario 2:** [langgraph-workspace-agent-sandbox#17](https://github.com/chuo-v/langgraph-workspace-agent-sandbox/pull/17)
+* **Scenario 3:** [langgraph-workspace-agent#19](https://github.com/chuo-v/langgraph-workspace-agent/pull/19)
+
+---
+
+---
+
 ## 🎯 Design Goals & Core Capabilities
 
 This agent is engineered to solve the security, cost-efficiency, and mobility constraints inherent to local-first repository engineering—challenges that traditional developer interfaces or transient chat wrappers often leave unaddressed.
