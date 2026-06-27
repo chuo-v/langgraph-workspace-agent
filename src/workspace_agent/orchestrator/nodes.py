@@ -6,6 +6,8 @@ import subprocess
 import time
 import uuid
 
+import psutil
+import redis
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
@@ -56,6 +58,17 @@ MAX_DIFF_LENGTH = 40000
 MAX_CONSECUTIVE_TOOL_STEPS = 30
 MAX_GITHUB_COMMENT_LENGTH = 60000
 MAX_FAST_PATH_LEN = 15
+
+
+# ==========================================
+# Redis Initialization
+# ==========================================
+try:
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_client = redis.Redis.from_url(redis_url)
+except Exception as e:
+    print(f"Warning: Failed to initialize Redis in nodes.py: {e}")
+    redis_client = None
 
 
 # ==========================================
@@ -1205,6 +1218,7 @@ def _execute_ci_suites(
     active_commit_sha: str,
     ci_suites: list,
     repo_full_name: str | None,
+    run_id: str,
 ) -> list[dict]:
     """Helper to isolate CI subprocess executions and status reporting."""
     # 1. Post pending statuses for all suites upfront
@@ -1223,60 +1237,72 @@ def _execute_ci_suites(
 
     # 2. Execute each suite strictly sequentially
     for suite in ci_suites:
+        # Check if a newer commit preempted us before we even start this suite
+        if redis_client and redis_client.get(f"ci_superseded:{run_id}"):
+            raise InterruptedError("Superseded by a newer commit.")
+
         context_str = f"Agentic CI / {suite.name}"
         try:
-            process = subprocess.run(
+            process = subprocess.Popen(
                 suite.command,
                 cwd=expanded_target_path,
                 shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=suite.timeout_seconds,
-                check=False,
             )
 
-            passed = process.returncode == 0
-            logs = f"{process.stdout}\n{process.stderr}".strip()
+            # Store the PID so a newer commit can preemptively kill this process
+            if redis_client:
+                redis_client.set(f"ci_pid:{target_path}", process.pid)
+
+            try:
+                stdout, stderr = process.communicate(timeout=suite.timeout_seconds)
+                passed = process.returncode == 0
+                logs = f"{stdout}\n{stderr}".strip()
+            except subprocess.TimeoutExpired:
+                # Force kill the process tree instantly using psutil
+                try:
+                    parent = psutil.Process(process.pid)
+                    for child in parent.children(recursive=True):
+                        child.kill()
+                    parent.kill()
+                except psutil.NoSuchProcess:
+                    pass
+
+                # Grab whatever output was generated before the timeout kill
+                stdout, stderr = process.communicate()
+                logs = (
+                    f"{stdout}\n{stderr}\n\n"
+                    f"[ERROR: TimeoutExpired] Command forcefully terminated after "
+                    f"{suite.timeout_seconds} seconds."
+                ).strip()
+                passed = False
+            finally:
+                # If we were killed by a newer commit, psutil causes communicate()
+                # to return instantly. We trap that here and abort cleanly before
+                # posting false test results to GitHub.
+                if redis_client and redis_client.get(f"ci_superseded:{run_id}"):
+                    raise InterruptedError("Superseded by a newer commit.")
 
             set_commit_status(
                 directory=target_path,
                 commit_sha=active_commit_sha,
                 state="success" if passed else "failure",
                 context_str=context_str,
-                description="Evaluation passed" if passed else "Evaluation failed",
+                description="Evaluation passed"
+                if passed
+                else "Execution timed out"
+                if not passed and "[ERROR: TimeoutExpired]" in logs
+                else "Evaluation failed",
                 repo_full_name=repo_full_name,
             )
 
             results.append({"name": suite.name, "passed": passed, "logs": logs})
 
-        except subprocess.TimeoutExpired as e:
-            stdout_str = (
-                e.stdout
-                if isinstance(e.stdout, str)
-                else (e.stdout.decode("utf-8", errors="replace") if e.stdout else "")
-            )
-            stderr_str = (
-                e.stderr
-                if isinstance(e.stderr, str)
-                else (e.stderr.decode("utf-8", errors="replace") if e.stderr else "")
-            )
-
-            logs = (
-                f"{stdout_str}\n{stderr_str}\n\n"
-                f"[ERROR: TimeoutExpired] Command timed out after "
-                f"{suite.timeout_seconds} seconds."
-            ).strip()
-
-            set_commit_status(
-                directory=target_path,
-                commit_sha=active_commit_sha,
-                state="failure",
-                context_str=context_str,
-                description="Execution timed out",
-                repo_full_name=repo_full_name,
-            )
-
-            results.append({"name": suite.name, "passed": False, "logs": logs})
+        except InterruptedError:
+            # Bubble up the intentional abort signal
+            raise
         except Exception as e:
             set_commit_status(
                 directory=target_path,
@@ -1291,6 +1317,203 @@ def _execute_ci_suites(
     return results
 
 
+def _handle_concurrency_rejection(
+    target_path: str,
+    pr_number: int,
+    commit_sha: str | None,
+    repo_full_name: str | None,
+    is_already_running: bool,
+    active_jobs: int,
+) -> None:
+    """Helper to post rejection messages when the CI concurrency limit is reached."""
+    max_jobs = settings.agent.max_concurrent_ci_jobs
+    reason = (
+        "A CI/CD job is already running for this repository"
+        if is_already_running
+        else f"Global concurrency limit ({max_jobs}) reached"
+    )
+    print(f"Agentic CI/CD skipped: {reason}. ({active_jobs}/{max_jobs})")
+
+    comment_body = (
+        f"⚠️ **Agentic CI/CD Skipped**\n\n"
+        f"{reason} to preserve system resources. "
+        f"If necessary, please comment `/retest` to try again once the current tests finish."
+    )
+
+    comment_on_pull_request(
+        directory=target_path,
+        pr_number=pr_number,
+        body=comment_body,
+        repo_full_name=repo_full_name,
+    )
+
+    if commit_sha:
+        set_commit_status(
+            directory=target_path,
+            commit_sha=commit_sha,
+            state="error",
+            context_str="Agentic CI/CD / Concurrency",
+            description="Concurrency limit reached. If necessary, comment /retest later.",
+            repo_full_name=repo_full_name,
+        )
+
+
+def _post_ci_results_comment(
+    target_path: str, pr_number: int, repo_full_name: str | None, results: list[dict]
+) -> None:
+    """Helper to format and post the consolidated CI results to GitHub."""
+    if not results:
+        return
+
+    summary_table = "| Suite | Status |\n|---|---|\n"
+    for r in results:
+        status_icon = "✅ Pass" if r["passed"] else "❌ Fail"
+        summary_table += f"| {r['name']} | {status_icon} |\n"
+
+    details_sections = ""
+    for r in results:
+        safe_logs = (
+            r["logs"][:MAX_GITHUB_COMMENT_LENGTH] + "\n...[TRUNCATED]"
+            if len(r["logs"]) > MAX_GITHUB_COMMENT_LENGTH
+            else r["logs"]
+        )
+
+        details_sections += (
+            f"\n<details><summary>Logs: {r['name']}</summary>\n\n"
+            f"```text\n{safe_logs}\n```\n</details>\n"
+        )
+
+    raw_prefix = settings.agent.agent_prefix or ""
+    prefix_str = f"{raw_prefix} " if raw_prefix and not raw_prefix.endswith(" ") else raw_prefix
+
+    comment_body = f"## {prefix_str}Agentic CI/CD Results\n\n{summary_table}\n{details_sections}"
+
+    comment_on_pull_request(
+        directory=target_path,
+        pr_number=pr_number,
+        body=comment_body,
+        repo_full_name=repo_full_name,
+    )
+
+
+def _preempt_stale_ci_run(workspace_lock_id: str, pid_key: str) -> None:
+    """Helper to assassinate an older, superseded Agentic CI test run."""
+    if not redis_client:
+        return
+
+    old_run_id = redis_client.get(workspace_lock_id)
+    if not old_run_id:
+        return
+
+    old_run_id = old_run_id.decode("utf-8") if isinstance(old_run_id, bytes) else old_run_id
+    print(f"Agentic CI: Preempting older execution {old_run_id} for newest commit.")
+
+    # Mark old run as superseded
+    redis_client.setex(f"ci_superseded:{old_run_id}", 3600, "1")
+
+    # Send SIGKILL to the old test suite process tree
+    old_pid = redis_client.get(pid_key)
+    if old_pid:
+        try:
+            parent = psutil.Process(int(old_pid))
+            for child in parent.children(recursive=True):
+                child.kill()
+            parent.kill()
+        except (psutil.NoSuchProcess, TypeError, ValueError):
+            pass
+
+    # Brief pause to let the old LangGraph thread trap
+    # the InterruptedError and exit cleanly
+    time.sleep(1.0)
+
+
+def _acquire_preemptive_lock(
+    target_path: str,
+    run_id: str,
+    pr_number: int,
+    commit_sha: str | None,
+    repo_full_name: str | None,
+) -> bool:
+    """Attempts to acquire the CI lock, preempting older runs if necessary."""
+    if not redis_client:
+        return True
+
+    workspace_lock_id = f"ci_job:{target_path}"
+    pid_key = f"ci_pid:{target_path}"
+
+    try:
+        is_already_running = redis_client.sismember("active_ci_jobs", workspace_lock_id)
+        active_jobs = redis_client.scard("active_ci_jobs")
+        limit_reached = active_jobs >= settings.agent.max_concurrent_ci_jobs
+
+        # Only reject if we hit the limit AND it's not our own repo we can preempt
+        if limit_reached and not is_already_running:
+            _handle_concurrency_rejection(
+                target_path,
+                pr_number,
+                commit_sha,
+                repo_full_name,
+                False,
+                active_jobs,
+            )
+            return False
+
+        if is_already_running:
+            _preempt_stale_ci_run(workspace_lock_id, pid_key)
+
+        # Acquire Lock for this new run
+        redis_client.sadd("active_ci_jobs", workspace_lock_id)
+        redis_client.set(workspace_lock_id, run_id)
+        return True
+    except Exception as e:
+        print(f"Warning: Redis concurrency check failed: {e}")
+        # Fail-open if Redis crashes temporarily so workflow isn't fully blocked
+        return True
+
+
+def _release_preemptive_lock_and_cleanup(
+    target_path: str, run_id: str, expanded_target_path: str, target_branch: str
+) -> None:
+    """Releases the redis lock if we still own it, and restores the git branch."""
+    workspace_lock_id = f"ci_job:{target_path}"
+    pid_key = f"ci_pid:{target_path}"
+    owns_lock = True
+
+    if redis_client:
+        try:
+            current_owner = redis_client.get(workspace_lock_id)
+            if current_owner:
+                current_owner = (
+                    current_owner.decode("utf-8")
+                    if isinstance(current_owner, bytes)
+                    else current_owner
+                )
+
+                if current_owner == run_id:
+                    # We still own the lock, clean it up
+                    redis_client.srem("active_ci_jobs", workspace_lock_id)
+                    redis_client.delete(workspace_lock_id)
+                    redis_client.delete(pid_key)
+                else:
+                    # A newer commit preempted us, leave the lock alone!
+                    owns_lock = False
+        except Exception as e:
+            print(f"Warning: Failed to verify Redis lock ownership: {e}")
+
+    # 5. Cleanup: Restore the repository to the target_branch
+    if owns_lock:
+        try:
+            sync_repository(expanded_target_path, target_branch)
+        except Exception as e:
+            # Log non-fatal error but don't crash the workflow
+            print(f"Warning: Failed to restore branch after CI: {e}", flush=True)
+    else:
+        print(
+            "Agentic CI: Branch cleanup skipped. "
+            "Repository is currently being tested by a newer commit."
+        )
+
+
 def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
     """
     Agentic CI/CD Execution Node.
@@ -1303,8 +1526,6 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
     pr_number = state.get("pr_number")
     target_branch = state.get("target_branch", "main")
 
-    # We must at least have the path and PR number to proceed.
-    # (commit_sha might be missing on ChatOps triggers, we will fetch it dynamically)
     if not target_path or not pr_number:
         return {}
 
@@ -1319,28 +1540,37 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
         )
         return {"ci_results": []}
 
-    expanded_target_path = os.path.expanduser(target_path)
+    # ==========================================
+    # 1. Redis Concurrency Lock (Preemptive)
+    # ==========================================
+    run_id = str(uuid.uuid4())
 
-    # 0. Sync workspace to the exact PR commit safely before running tests
-    sync_res = json.loads(
-        sync_to_commit(expanded_target_path, commit_sha=commit_sha, pr_number=pr_number)
-    )
-    if sync_res.get("status") == "error":
-        print(f"Agentic CI sync error: {sync_res}", flush=True)
-        if commit_sha:
-            set_commit_status(
-                directory=target_path,
-                commit_sha=commit_sha,
-                state="error",
-                context_str="Agentic CI / Setup",
-                description="Failed to checkout PR branch for testing.",
-                repo_full_name=repo_full_name,
-            )
+    if not _acquire_preemptive_lock(target_path, run_id, pr_number, commit_sha, repo_full_name):
         return {"ci_results": []}
 
-    active_commit_sha = sync_res.get("commit")
+    # Lock acquired (or bypassed via fail-open), proceed with execution
+    expanded_target_path = os.path.expanduser(target_path)
 
     try:
+        # 0. Sync workspace to the exact PR commit safely before running tests
+        sync_res = json.loads(
+            sync_to_commit(expanded_target_path, commit_sha=commit_sha, pr_number=pr_number)
+        )
+        if sync_res.get("status") == "error":
+            print(f"Agentic CI sync error: {sync_res}", flush=True)
+            if commit_sha:
+                set_commit_status(
+                    directory=target_path,
+                    commit_sha=commit_sha,
+                    state="error",
+                    context_str="Agentic CI / Setup",
+                    description="Failed to checkout PR branch for testing.",
+                    repo_full_name=repo_full_name,
+                )
+            return {"ci_results": []}
+
+        active_commit_sha = sync_res.get("commit")
+
         # Execute all suites cleanly using the helper
         results = _execute_ci_suites(
             target_path=target_path,
@@ -1348,54 +1578,24 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
             active_commit_sha=active_commit_sha,
             ci_suites=workspace_config.ci_suites,
             repo_full_name=repo_full_name,
+            run_id=run_id,
         )
 
         # 3. Post Consolidated PR Comment
-        if results:
-            summary_table = "| Suite | Status |\n|---|---|\n"
-            for r in results:
-                status_icon = "✅ Pass" if r["passed"] else "❌ Fail"
-                summary_table += f"| {r['name']} | {status_icon} |\n"
-
-            details_sections = ""
-            for r in results:
-                safe_logs = (
-                    r["logs"][:MAX_GITHUB_COMMENT_LENGTH] + "\n...[TRUNCATED]"
-                    if len(r["logs"]) > MAX_GITHUB_COMMENT_LENGTH
-                    else r["logs"]
-                )
-
-                details_sections += (
-                    f"\n<details><summary>Logs: {r['name']}</summary>\n\n"
-                    f"```text\n{safe_logs}\n```\n</details>\n"
-                )
-
-            raw_prefix = settings.agent.agent_prefix or ""
-            prefix_str = (
-                f"{raw_prefix} " if raw_prefix and not raw_prefix.endswith(" ") else raw_prefix
-            )
-
-            comment_body = (
-                f"## {prefix_str}Agentic CI/CD Results\n\n{summary_table}\n{details_sections}"
-            )
-
-            comment_on_pull_request(
-                directory=target_path,
-                pr_number=pr_number,
-                body=comment_body,
-                repo_full_name=repo_full_name,
-            )
+        _post_ci_results_comment(target_path, pr_number, repo_full_name, results)
 
         return {"ci_results": results}
 
+    except InterruptedError as e:
+        # We were gracefully aborted by a newer commit, exit quietly.
+        print(f"Agentic CI gracefully aborted: {e}", flush=True)
+        return {"ci_results": []}
+
     finally:
-        # 4. Cleanup: Restore the repository to the target_branch
-        # Ensures the agent isn't left stranded in a detached HEAD state on a PR commit
-        try:
-            sync_repository(expanded_target_path, target_branch)
-        except Exception as e:
-            # Log non-fatal error but don't crash the workflow
-            print(f"Warning: Failed to restore branch after CI: {e}", flush=True)
+        # 4. Release Concurrency Lock & Cleanup
+        _release_preemptive_lock_and_cleanup(
+            target_path, run_id, expanded_target_path, target_branch
+        )
 
 
 # ==========================================

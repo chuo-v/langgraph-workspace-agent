@@ -24,6 +24,10 @@ class OrchestrationConfig(BaseModel):
     max_sandbox_retries: int = Field(
         default=3, description="Max autonomous retry attempts if code execution fails."
     )
+    max_concurrent_ci_jobs: int = Field(
+        default=1,
+        description="Maximum number of Agentic CI test suites permitted to run concurrently.",
+    )
     router_timeout_seconds: int = Field(
         default=90,
         description=(

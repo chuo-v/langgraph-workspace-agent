@@ -16,6 +16,8 @@ agent:
     - "your_github_username"
   # how many times the agent can retry fixing a tracebacked sandbox execution
   max_sandbox_retries: 3
+  # Maximum number of Agentic CI test suites permitted to run concurrently across all workspaces
+  max_concurrent_ci_jobs: 1
   # appends a footer to Telegram messages showing LLM API call counts
   show_telemetry: true
   # Text prepended to PR titles, PR comments, and commit messages (leave empty for none)

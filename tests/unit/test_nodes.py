@@ -1470,7 +1470,10 @@ def test_evaluate_diff_node_error_hallucination_trap_aborted(mocker):
 
 def test_agentic_ci_node_success_all_pass(mocker):
     """Green Path: Executes multiple suites successfully and reports back to GitHub."""
-    # mock workspace config
+    # Disable Redis for unit tests
+    mocker.patch("src.workspace_agent.orchestrator.nodes.redis_client", None)
+
+    # Mock workspace config
     mock_suite_1 = mocker.Mock(name="Unit Tests", command="pytest", timeout_seconds=60)
     mock_suite_1.name = "Unit Tests"
 
@@ -1490,13 +1493,12 @@ def test_agentic_ci_node_success_all_pass(mocker):
     )
     mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
 
-    # mock subprocess.run for both suites
+    # mock subprocess.Popen for both suites
     mock_process = mocker.Mock()
     mock_process.returncode = 0
-    mock_process.stdout = "Test Passed"
-    mock_process.stderr = ""
-    mock_run = mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.subprocess.run", return_value=mock_process
+    mock_process.communicate.return_value = ("Test Passed", "")
+    mock_popen = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.subprocess.Popen", return_value=mock_process
     )
 
     # mock github API calls
@@ -1513,7 +1515,7 @@ def test_agentic_ci_node_success_all_pass(mocker):
     result = agentic_ci_node(state)
 
     # verify OS processes ran
-    assert mock_run.call_count == 2
+    assert mock_popen.call_count == 2
 
     # verify github pending & success statuses sent
     assert mock_set_status.call_count == 4  # 2 pending, 2 success
@@ -1543,6 +1545,8 @@ def test_agentic_ci_node_fallback_missing_context():
 
 def test_agentic_ci_node_error_timeout(mocker):
     """Red Path: Safely traps OS timeouts and reports them as failures back to the PR."""
+    # Disable Redis for unit tests
+    mocker.patch("src.workspace_agent.orchestrator.nodes.redis_client", None)
     mock_suite = mocker.Mock(name="Slow Test", command="sleep 10", timeout_seconds=1)
     mock_suite.name = "Slow Test"
 
@@ -1560,10 +1564,16 @@ def test_agentic_ci_node_error_timeout(mocker):
     mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
 
     # Raise TimeoutExpired to simulate a hanging execution
+    mock_process = mocker.Mock()
+    mock_process.pid = 12345
+    mock_process.communicate.side_effect = [
+        subprocess.TimeoutExpired(cmd="sleep 10", timeout=1),
+        ("hanging...", ""),
+    ]
     mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="sleep 10", timeout=1, output="hanging..."),
+        "src.workspace_agent.orchestrator.nodes.subprocess.Popen", return_value=mock_process
     )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.psutil.Process")
 
     mock_set_status = mocker.patch("src.workspace_agent.orchestrator.nodes.set_commit_status")
     mock_comment = mocker.patch("src.workspace_agent.orchestrator.nodes.comment_on_pull_request")
