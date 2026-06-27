@@ -31,11 +31,17 @@ agent:
 # ==========================================
 llm:
   base_tier:
-    default_model: "qwen_local"
+    # Cloud-native default: Use a fast, cheap cloud model for high-volume intent routing.
+    default_model: "gemini_flash"
     available_models:
-      qwen_local:
-        provider: "ollama"
-        model_name: "qwen2.5:32b"
+      gemini_flash:
+        provider: "gemini"
+        model_name: "gemini-2.5-flash"
+
+      # Example for local hosting (uncomment to use local Ollama instead):
+      # qwen_local:
+      #   provider: "ollama"
+      #   model_name: "qwen2.5:32b"
 
   standard_tier:
     default_model: "deepseek_fast"
