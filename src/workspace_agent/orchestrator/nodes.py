@@ -55,7 +55,6 @@ from src.workspace_agent.tools.registry import agent_tools, execute_tool_call
 
 MAX_CONTEXT_LENGTH = 500
 MAX_DIFF_LENGTH = 40000
-MAX_CONSECUTIVE_TOOL_STEPS = 30
 MAX_GITHUB_COMMENT_LENGTH = 60000
 MAX_FAST_PATH_LEN = 15
 
@@ -181,11 +180,14 @@ def _check_circuit_breaker(messages: list) -> dict | None:
         if msg.type in ["ai", "tool"]:
             consecutive_agent_steps += 1
 
-    if consecutive_agent_steps >= MAX_CONSECUTIVE_TOOL_STEPS:
-        loops = MAX_CONSECUTIVE_TOOL_STEPS // 2
+    limit = settings.agent.max_consecutive_tool_steps
+
+    if consecutive_agent_steps >= limit:
+        loops = limit // 2
         abort_msg = (
             "⚠️ **Execution Aborted:** The agent entered a runaway loop by executing "
-            f"tools {loops} times in a row without finalizing the task. Circuit breaker triggered."
+            f"tools {loops} times in a row without finalizing the task. Circuit breaker "
+            "triggered."
         )
         return {
             "messages": [AIMessage(content=abort_msg)],

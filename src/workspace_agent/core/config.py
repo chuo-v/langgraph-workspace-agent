@@ -34,6 +34,12 @@ class OrchestrationConfig(BaseModel):
             "Max time in seconds to wait for the intent router before escalating or timing out."
         ),
     )
+    max_consecutive_tool_steps: int = Field(
+        default=60,
+        description=(
+            "Max number of consecutive tool/AI steps before the circuit breaker aborts execution."
+        ),
+    )
     show_telemetry: bool = Field(
         default=True, description="Toggle to display LLM API call counts in Telegram."
     )
