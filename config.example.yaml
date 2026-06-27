@@ -9,16 +9,19 @@
 # ==========================================
 # global orchestration parameters
 agent:
-  # the default branch the agent will sync and branch off from
+  # The default branch the agent will sync and branch off from
   target_branch: "main"
   # List of GitHub usernames authorized to trigger the agent via PRs or ChatOps comments.
   allowed_github_users:
     - "your_github_username"
-  # how many times the agent can retry fixing a tracebacked sandbox execution
+  # How many times the agent can retry fixing a tracebacked sandbox execution
   max_sandbox_retries: 3
+  # Maximum number of consecutive tool steps (AI + Tool pairs) before triggering the
+  # circuit breaker (60 steps = 30 loops)
+  max_consecutive_tool_steps: 60
   # Maximum number of Agentic CI test suites permitted to run concurrently across all workspaces
   max_concurrent_ci_jobs: 1
-  # appends a footer to Telegram messages showing LLM API call counts
+  # Appends a footer to Telegram messages showing LLM API call counts
   show_telemetry: true
   # Text prepended to PR titles, PR comments, and commit messages (leave empty for none)
   agent_prefix: "🤖"

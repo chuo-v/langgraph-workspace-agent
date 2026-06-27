@@ -10,8 +10,8 @@ from langchain_core.messages import (
 )
 from langgraph.store.memory import InMemoryStore
 
+from src.workspace_agent.core.config import settings
 from src.workspace_agent.orchestrator.nodes import (
-    MAX_CONSECUTIVE_TOOL_STEPS,
     _build_cross_workspace_prompt,
     _chunk_git_diff,
     _extract_modified_tex_files,
@@ -1091,13 +1091,15 @@ def test_execute_task_node_error_api_invocation_crash_max_retries(mocker):
 
 def test_execute_task_node_error_circuit_breaker():
     """
-    Red Path: Verifies that if the agent executes MAX_CONSECUTIVE_TOOL_STEPS
+    Red Path: Verifies that if the agent executes max_consecutive_tool_steps
     without human interaction, the circuit breaker safely aborts the workflow.
     """
     messages = [HumanMessage(content="Start loop")]
 
+    limit = settings.agent.max_consecutive_tool_steps
+
     # Generate enough consecutive non-human messages to trigger the breaker
-    for i in range(MAX_CONSECUTIVE_TOOL_STEPS + 1):
+    for i in range(limit + 1):
         messages.append(AIMessage(content=f"Thinking {i}"))
 
     state = {"workspace_absolute_path": "/tmp", "messages": messages}
