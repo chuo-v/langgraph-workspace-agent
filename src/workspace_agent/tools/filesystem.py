@@ -27,14 +27,20 @@ def secure_resolve_path(requested_path: str | Path, allowed_paths: list[str | Pa
 
     # Protects against Host-to-Container path evasion and variant secret extensions
     blocked_dirs = {".git", ".secrets", "langgraph-workspace-agent"}
-    blocked_prefixes = (".env", ".ssh", ".aws", ".kube")
+    blocked_prefixes = (".ssh", ".aws", ".kube")
     blocked_extensions = (".pem", ".key", ".cert", ".pkcs12")
 
+    # Explicit whitelist for safe template files
+    allowed_env_templates = {".env.example", ".env.template", ".env.sample", ".env.dist"}
+
     for part in target_path.parts:
+        # Block .env files unless they are explicitly whitelisted templates
+        is_blocked_env = part.startswith(".env") and part not in allowed_env_templates
         if (
             part in blocked_dirs
             or part.startswith(blocked_prefixes)
             or part.endswith(blocked_extensions)
+            or is_blocked_env
         ):
             raise PermissionError(
                 f"Security Exception: Access to hidden, sensitive, or system "
