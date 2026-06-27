@@ -30,7 +30,7 @@ from src.workspace_agent.orchestrator.router import (
     TIER_FRONTIER,
     TIER_STANDARD,
     TerminalEscalationError,
-    get_execution_llm,
+    get_execution_llm_sequence,
     get_intent_router,
     get_tier_for_model,
 )
@@ -68,6 +68,39 @@ try:
 except Exception as e:
     print(f"Warning: Failed to initialize Redis in nodes.py: {e}")
     redis_client = None
+
+
+# ==========================================
+# Runtime Fallback Helper
+# ==========================================
+
+
+def _build_fallback_chain(llms: list, tools: list = None, structured_schema=None):
+    """
+    Constructs a resilient LCEL chain that automatically falls back to higher-tier models
+    if the primary model fails or times out.
+    Applies tools or structured schemas to ALL models in the sequence.
+    """
+    if not llms:
+        raise ValueError("Cannot build fallback chain: No LLMs provided.")
+
+    chains = []
+    for llm in llms:
+        chain = llm
+        if tools:
+            chain = chain.bind_tools(tools)
+        elif structured_schema:
+            model_name = getattr(llm, "model_name", "")
+            if "deepseek" in str(model_name).lower() or "gemini" in str(model_name).lower():
+                chain = chain.with_structured_output(structured_schema, method="function_calling")
+            else:
+                chain = chain.with_structured_output(structured_schema)
+        chains.append(chain)
+
+    primary_chain = chains[0]
+    if len(chains) > 1:
+        return primary_chain.with_fallbacks(chains[1:])
+    return primary_chain
 
 
 # ==========================================
@@ -361,10 +394,17 @@ def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
 def conversational_reply_node(state: AgentState, config: RunnableConfig = None) -> dict:
     config = config or {}
 
-    # Map conversational queries to the requested model if provided
-    llm = get_execution_llm(
-        requested_tier=TIER_BASE, requested_model_key=state.get("requested_model")
-    )
+    try:
+        # Fetch sequence and construct fallback chain
+        llms = get_execution_llm_sequence(
+            requested_tier=TIER_BASE, requested_model_key=state.get("requested_model")
+        )
+        execution_chain = _build_fallback_chain(llms)
+    except TerminalEscalationError as e:
+        return {
+            "messages": [AIMessage(content=f"⚠️ **Escalation Failed:** {str(e)}")],
+            "is_aborted": True,
+        }
 
     # Inject a system prompt to guide the conversational response and prevent hallucination
     system_prompt = SystemMessage(
@@ -379,7 +419,7 @@ def conversational_reply_node(state: AgentState, config: RunnableConfig = None) 
     # Prepend the system prompt dynamically without permanently saving it to state
     messages_to_send = [system_prompt] + state.get("messages", [])
 
-    response = llm.invoke(messages_to_send, config=config)
+    response = execution_chain.invoke(messages_to_send, config=config)
 
     return {
         "messages": [response],
@@ -714,16 +754,15 @@ def execute_task_node(  # noqa: PLR0911, PLR0915
     if sync_abort_state:
         return sync_abort_state
 
-    # instantiate LLM
+    # instantiate resilient fallback chain
     try:
-        llm = get_execution_llm(requested_tier=tier, requested_model_key=requested_model)
+        llms = get_execution_llm_sequence(requested_tier=tier, requested_model_key=requested_model)
+        execution_chain = _build_fallback_chain(llms, tools=agent_tools)
     except TerminalEscalationError as e:
         return {
             "messages": [AIMessage(content=f"⚠️ **Escalation Failed:** {str(e)}")],
             "is_aborted": True,
         }
-
-    llm_with_tools = llm.bind_tools(agent_tools)
 
     # context assembly
     messages = get_hybrid_context(
@@ -753,7 +792,7 @@ def execute_task_node(  # noqa: PLR0911, PLR0915
 
     # LLM execution & sanitization with API Resilience
     try:
-        response = llm_with_tools.invoke(filtered_messages, config=config)
+        response = execution_chain.invoke(filtered_messages, config=config)
     except Exception as e:
         # catch strict API rate limits, timeouts, or JSON truncation errors
         retry_count = state.get("execution_retry_count", 0)
@@ -1126,9 +1165,10 @@ def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:  
     ).strip()
 
     try:
-        # We use the base tier LLM for fast, reliable evaluation
-        llm = get_execution_llm(requested_tier=TIER_BASE, temperature=0.0)
-        eval_result = llm.invoke(critic_prompt, config=config).content.strip()
+        # Use the base tier LLM for fast, reliable evaluation, wrapping it in fallbacks
+        llms = get_execution_llm_sequence(requested_tier=TIER_BASE, temperature=0.0)
+        eval_chain = _build_fallback_chain(llms)
+        eval_result = eval_chain.invoke(critic_prompt, config=config).content.strip()
     except Exception:
         # Degrade gracefully if API fails and pass it through
         return {"latest_traceback_error": None}
@@ -1617,7 +1657,8 @@ def _generate_commit_message(
 
     config = config or {}
     try:
-        llm = get_execution_llm(requested_tier=TIER_BASE, temperature=0.2)
+        llms = get_execution_llm_sequence(requested_tier=TIER_BASE, temperature=0.2)
+        eval_chain = _build_fallback_chain(llms)
 
         # Fast track for huge diffs: just use the blueprint and the first chunk
         chunks = _chunk_git_diff(incremental_diff, MAX_DIFF_LENGTH)
@@ -1633,7 +1674,7 @@ def _generate_commit_message(
             diff_snippet=diff_str,
         ).strip()
 
-        res = llm.invoke(prompt, config=config).content.strip().strip("\"'")
+        res = eval_chain.invoke(prompt, config=config).content.strip().strip("\"'")
         if res:
             return f"{prefix_str}{res}"
     except Exception as e:
@@ -1647,11 +1688,11 @@ def _generate_pr_metadata(
 ) -> tuple[str, str, str]:
     """Helper to generate semantic branch names and PR descriptions using Map-Reduce."""
     config = config or {}
-    llm = get_execution_llm(requested_tier=TIER_BASE, temperature=0.2)
-
-    chunks = _chunk_git_diff(raw_diff, MAX_DIFF_LENGTH)
-
     try:
+        llms = get_execution_llm_sequence(requested_tier=TIER_BASE, temperature=0.2)
+        eval_chain = _build_fallback_chain(llms)
+        chunks = _chunk_git_diff(raw_diff, MAX_DIFF_LENGTH)
+
         # Map phase: Anchor each chunk with the Blueprint and parse file-by-file
         if len(chunks) > 1:
             chunk_summaries = []
@@ -1666,7 +1707,7 @@ def _generate_pr_metadata(
                     chunk_text=chunk_text,
                 ).strip()
 
-                res = llm.invoke(map_prompt, config=config).content.strip()
+                res = eval_chain.invoke(map_prompt, config=config).content.strip()
                 chunk_summaries.append(res)
 
             synthesized_diff = "\n\n".join(
@@ -1687,7 +1728,9 @@ def _generate_pr_metadata(
             synthesized_diff=syn_diff_str,
         ).strip()
 
-        generated_summary = llm.invoke(summary_prompt, config=config).content.strip().strip("\"'")
+        generated_summary = (
+            eval_chain.invoke(summary_prompt, config=config).content.strip().strip("\"'")
+        )
 
         body_prompt = PromptManager.get(
             "pr_generation",
@@ -1697,7 +1740,7 @@ def _generate_pr_metadata(
             synthesized_diff=syn_diff_str,
         ).strip()
 
-        generated_body = llm.invoke(body_prompt, config=config).content.strip()
+        generated_body = eval_chain.invoke(body_prompt, config=config).content.strip()
     except Exception as e:
         print(f"Error in PR generation map-reduce: {e}")
         generated_summary = "Automated agent modifications"
@@ -2036,13 +2079,12 @@ def update_memory_node(
     thread_id = config.get("configurable", {}).get("thread_id", "default")
 
     try:
-        llm = get_execution_llm(requested_tier=TIER_BASE)
-        if not llm:
+        llms = get_execution_llm_sequence(requested_tier=TIER_BASE)
+        if not llms:
             return {}
+        extractor = _build_fallback_chain(llms, structured_schema=MemoryExtraction)
     except TerminalEscalationError:
         return {}
-
-    extractor = llm.with_structured_output(MemoryExtraction)
 
     # Read the current entity profile from the Store
     namespace = ("user_profile", user_id)

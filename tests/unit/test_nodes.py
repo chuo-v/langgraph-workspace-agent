@@ -439,7 +439,9 @@ def test_generate_commit_message_success_semantic(mocker):
     """Green Path: Successfully generates a semantic commit message from user feedback."""
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "Update toggle settings"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     msg = _generate_commit_message(
         "Please update the toggle settings to false", "+new code", "M\tfile.py"
@@ -450,7 +452,7 @@ def test_generate_commit_message_success_semantic(mocker):
 def test_generate_commit_message_fallback_api_error(mocker):
     """Edge Path: Returns the default legacy message if the LLM fails."""
     mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.get_execution_llm",
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence",
         side_effect=Exception("API Outage"),
     )
 
@@ -479,7 +481,9 @@ def test_generate_pr_metadata_success_map_reduce(mocker):
     mock_llm = mocker.Mock()
     # Each map and reduce step will return this generic response
     mock_llm.invoke.return_value.content = "mocked map-reduce response"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     raw_diff = (
         "diff --git a/file1.py b/file1.py\n"
@@ -505,7 +509,9 @@ def test_generate_pr_metadata_success_single_chunk(mocker):
     mocker.patch("src.workspace_agent.orchestrator.nodes.MAX_DIFF_LENGTH", 40000)
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "mocked generic response"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     raw_diff = "diff --git a/file1.py b/file1.py\n+print('hello')"
     blueprint = "M\tfile1.py"
@@ -523,7 +529,9 @@ def test_generate_pr_metadata_fallback_on_error(mocker):
     # Force the LLM's invoke method to raise an exception (simulating an API timeout)
     mock_llm = mocker.Mock()
     mock_llm.invoke.side_effect = Exception("API Outage")
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     branch, body, summary = _generate_pr_metadata("Update files", "raw diff", "M\tfile.py")
 
@@ -1017,7 +1025,9 @@ def test_execute_task_node_success_standard(mocker):
         content="I will do the task now.",
         tool_calls=[{"name": "read_files", "args": {}, "id": "call_123"}],
     )
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {
         "workspace_absolute_path": "/tmp/test",
@@ -1046,7 +1056,9 @@ def test_execute_task_node_fallback_api_invocation_crash(mocker):
     # mock LLM to throw an exception directly on invoke to simulate a Rate Limit or Timeout
     mock_llm = mocker.Mock()
     mock_llm.bind_tools.return_value.invoke.side_effect = Exception("Rate Limit Exceeded")
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     # Mock time.sleep to not actually delay the test suite
     mocker.patch("src.workspace_agent.orchestrator.nodes.time.sleep")
@@ -1075,7 +1087,9 @@ def test_execute_task_node_error_api_invocation_crash_max_retries(mocker):
     # Mock LLM to throw an exception directly
     mock_llm = mocker.Mock()
     mock_llm.bind_tools.return_value.invoke.side_effect = Exception("Rate Limit Exceeded")
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     # Force state to be at the maximum retry limit (default is 3)
     state = {
@@ -1119,7 +1133,7 @@ def test_execute_task_node_error_escalation_crash(mocker):
 
     # force the router to fail escalating to Tier 3
     mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.get_execution_llm",
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence",
         side_effect=TerminalEscalationError("API Offline"),
     )
 
@@ -1237,7 +1251,9 @@ def test_evaluate_diff_node_success_ignores_system_messages(mocker):
     mocker.patch("src.workspace_agent.orchestrator.nodes.get_git_diff", return_value="+new code")
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "PASS"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {
         "workspace_absolute_path": "/tmp/test",
@@ -1267,7 +1283,9 @@ def test_evaluate_diff_node_success_pass(mocker):
     mocker.patch("src.workspace_agent.orchestrator.nodes.get_git_diff", return_value="+new code")
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "PASS"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {"workspace_absolute_path": "/tmp/test", "messages": []}
     result = evaluate_diff_node(state)
@@ -1285,7 +1303,9 @@ def test_evaluate_diff_node_fallback_critic_api_crash_handling(mocker):
     # Force the base tier client factory to return an execution engine that crashes
     mock_llm = mocker.Mock()
     mock_llm.invoke.side_effect = Exception("Ollama connection refused / out of memory")
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {"workspace_absolute_path": "/tmp/test", "messages": []}
     result = evaluate_diff_node(state)
@@ -1299,7 +1319,9 @@ def test_evaluate_diff_node_fallback_empty_pass(mocker):
     mocker.patch("src.workspace_agent.orchestrator.nodes.get_git_diff", return_value="")
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "PASS"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {"workspace_absolute_path": "/tmp/test", "messages": []}
     result = evaluate_diff_node(state)
@@ -1312,7 +1334,7 @@ def test_evaluate_diff_node_fallback_empty_pass(mocker):
 def test_evaluate_diff_node_fallback_escape_hatch(mocker):
     """Edge Path: Bypasses the trap if the agent legitimately used the escape hatch."""
     mocker.patch("src.workspace_agent.orchestrator.nodes.get_git_diff", return_value="")
-    mock_llm = mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm")
+    mock_llm = mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence")
 
     # Mock the AIMessage with the explicit tool call (Added the required 'id' field)
     mock_msg = AIMessage(
@@ -1340,7 +1362,9 @@ def test_evaluate_diff_node_fallback_fail_retry(mocker):
     mocker.patch("src.workspace_agent.orchestrator.nodes.get_git_diff", return_value="+wrong code")
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "FAIL: You used the wrong variable name."
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {
         "workspace_absolute_path": "/tmp/test",
@@ -1375,7 +1399,9 @@ def test_evaluate_diff_node_fallback_hallucination_trap_triggered(mocker):
 
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value = mocker.Mock(content="PASS")
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     # Agent thinks it did a workspace operation, but no tool calls were used
     state = {
@@ -1412,7 +1438,9 @@ def test_evaluate_diff_node_fallback_revert_trap(mocker):
 
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "PASS"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {"workspace_absolute_path": "/tmp/test", "messages": []}
     evaluate_diff_node(state)
@@ -1430,7 +1458,9 @@ def test_evaluate_diff_node_error_fail_max_retries(mocker):
     mocker.patch("src.workspace_agent.orchestrator.nodes.get_git_diff", return_value="+wrong code")
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "FAIL: Still wrong."
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {"workspace_absolute_path": "/tmp/test", "execution_retry_count": 3, "messages": []}
     result = evaluate_diff_node(state)
@@ -1448,7 +1478,9 @@ def test_evaluate_diff_node_error_hallucination_trap_aborted(mocker):
 
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value = mocker.Mock(content="PASS")
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {
         "workspace_absolute_path": "/tmp/test",
@@ -1692,7 +1724,9 @@ def test_review_pr_node_success_new_pr(mocker):
     # mock LLM for PR metadata generation
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "mocked summary"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
     # mock the PR creation tool explicitly
     mock_open_pr = mocker.patch(
         "src.workspace_agent.orchestrator.nodes.open_pull_request",
@@ -1744,7 +1778,9 @@ def test_review_pr_node_success_refining_existing_pr(mocker):
     # mock LLM to avoid calling Ollama during unit tests
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "mocked summary"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     # spy on the PR creation tool to ensure it is NEVER called
     mock_open_pr = mocker.patch("src.workspace_agent.orchestrator.nodes.open_pull_request")
@@ -1787,7 +1823,9 @@ def test_review_pr_node_fallback_diff_extraction_failure(mocker):
 
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "mocked summary"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.create_branch_and_commit",
@@ -1824,7 +1862,9 @@ def test_review_pr_node_fallback_self_healing_trap(mocker):
     # mock LLM to avoid calling Ollama during tests
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "mocked summary"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {
         "workspace_absolute_path": "/tmp/test",
@@ -1849,7 +1889,9 @@ def test_review_pr_node_error_generic_commit_failure(mocker):
     # mock LLM generation metadata
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "mocked summary"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     # simulate a severe git failure that is NOT 'no_changes_to_commit'
     mock_error_json = (
@@ -1883,7 +1925,9 @@ def test_review_pr_node_error_github_api_rejection(mocker):
     # mock LLM generation metadata
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "mocked summary"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.create_branch_and_commit",
@@ -1920,7 +1964,9 @@ def test_review_pr_node_error_self_healing_trap_max_retries(mocker):
 
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value.content = "mocked summary"
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {
         "workspace_absolute_path": "/tmp/test",
@@ -1941,7 +1987,9 @@ def test_conversational_reply_node_success_standard(mocker):
     """Green Path: Conversational node successfully invokes the LLM without tools."""
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value = AIMessage(content="Hello there!")
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     state = {"messages": [HumanMessage(content="Hi")], "t1_base_calls": 0}
     result = conversational_reply_node(state)
@@ -1988,7 +2036,9 @@ def test_update_memory_node_success_message_stripping(mocker):
     mock_extractor.invoke.return_value = mock_extraction
     mock_llm.with_structured_output.return_value = mock_extractor
 
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
     mocker.patch("src.workspace_agent.orchestrator.nodes.open", mocker.mock_open())
     mocker.patch("src.workspace_agent.orchestrator.nodes.save_memory")
 
@@ -2038,7 +2088,9 @@ def test_update_memory_node_success_standard(mocker):
     mock_llm.with_structured_output.return_value = mock_extractor
 
     mocker.patch("src.workspace_agent.orchestrator.nodes.open", mocker.mock_open())
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
     mock_save_memory = mocker.patch("src.workspace_agent.orchestrator.nodes.save_memory")
 
     store = InMemoryStore()
@@ -2090,7 +2142,9 @@ def test_update_memory_node_fallback_disk_backup_fails(mocker, capsys):
 
     mock_extractor.invoke.return_value = mock_extraction
     mock_llm.with_structured_output.return_value = mock_extractor
-    mocker.patch("src.workspace_agent.orchestrator.nodes.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence", return_value=[mock_llm]
+    )
 
     # Force the local file write to throw a Permission Error
     mocker.patch(
@@ -2121,7 +2175,7 @@ def test_update_memory_node_fallback_llm_unavailable(mocker):
     """Edge Path: If the base tier LLM is offline, safely return without crashing."""
     # Simulate the router failing to find an active Base Tier LLM
     mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.get_execution_llm",
+        "src.workspace_agent.orchestrator.nodes.get_execution_llm_sequence",
         side_effect=TerminalEscalationError("No models available"),
     )
 
