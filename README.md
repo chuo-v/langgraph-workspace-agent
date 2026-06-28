@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/20ca269a-5c42-4dce-b3fb-cfc62e2434fa
 This agent is engineered to solve the security, cost-efficiency, and mobility constraints inherent to local-first repository engineering—challenges that traditional developer interfaces or transient chat wrappers often leave unaddressed.
 
 * 📱 **Asynchronous Mobile Ingress:** Standard terminal agents require your primary machine to remain active and your session open. By utilizing background task queues over Telegram webhooks, long-running workflows can be safely triggered and monitored from your mobile device while on the go. The local daemon processes the execution graph independently and only alerts you upon completion.
-* 💸 **Cost-Optimized Tiered Escalation:** Routine tasks shouldn't incur premium API costs. A probabilistic triage router at the ingress layer offloads context gathering and commit synthesis to low-cost or local base models. High-tier frontier execution engines are selectively engaged only for complex tasks or when explicitly requested via a `/use:frontier` flag.
+* 💸 **Cost-Optimized Tiered Escalation:** Routine tasks shouldn't incur premium API costs. A probabilistic triage router at the ingress layer offloads context gathering and commit synthesis to low-cost cloud models or local base models. High-tier frontier execution engines are selectively engaged only for complex tasks or when explicitly requested via a `/use:frontier` flag.
 * 🔒 **Infrastructure-Enforced Sandboxing:** To mitigate the risks of unconstrained code execution and prompt-injection, the agent operates within an immutable, infrastructure-level boundary. Using a Docker-out-of-Docker (DooD) engine, the ephemeral sandboxes only mount explicitly whitelisted paths, keeping your host system secure.
 * 🛡️ **Human-in-the-Loop Safeguards:** The agent strictly operates only on configured, whitelisted repositories. Furthermore, it is designed to never directly push commits; instead, it exclusively opens Pull Requests that require manual human review. This design introduces a strong secondary layer of protection to help reduce the risk of an agent unintentionally disrupting a repository.
 * 🧠 **Episodic Vector Memory:** Deep conversational context windows inherently suffer from degradation over long engineering sessions. This platform mitigates this via a dual-layer memory system: active thread states are checkpointed securely, while localized codebase constraints and historical "operational insights" are indexed via vector search for ahead-of-time semantic self-reminding.
@@ -52,7 +52,7 @@ To successfully run this agent, your environment must meet the following baselin
 * **External Accounts:**
   * A Telegram Bot Token (for the UI/Ingress).
   * A GitHub Personal Access Token (for PR creation and repository management).
-  * API keys for your preferred supported LLM cloud providers (Gemini, Anthropic, DeepSeek) for the standard/frontier tiers.
+  * API keys for your preferred supported LLM cloud providers (Anthropic, DeepSeek, Gemini, OpenAI) for the base, standard, and frontier tiers.
   * A Cloudflare account (if utilizing Zero Trust Tunnels for secure webhook exposure).
 
 ---

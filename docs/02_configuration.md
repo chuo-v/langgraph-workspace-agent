@@ -37,22 +37,31 @@ agent:
 # ==========================================
 llm:
   base_tier:
-    default_model: "qwen_local"
+    default_model: "gemini_flash"
     available_models:
+      gemini_flash:
+        provider: "gemini"
+        model_name: "gemini-2.5-flash"
       qwen_local:
         provider: "ollama"
         model_name: "qwen2.5:32b"
 
   standard_tier:
-    default_model: "deepseek_fast"
+    default_model: "deepseek_flash"
     available_models:
-      deepseek_fast:
+      deepseek_flash:
         provider: "deepseek"
-        model_name: "deepseek-chat"
+        model_name: "deepseek-v4-flash"
 
   frontier_tier:
-    default_model: "gemini_pro"
+    default_model: "claude"
     available_models:
+      claude:
+        provider: "anthropic"
+        model_name: "claude-sonnet-4-6"
+      deepseek_pro:
+        provider: "deepseek"
+        model_name: "deepseek-v4-pro"
       gemini_pro:
         provider: "gemini"
         model_name: "gemini-2.5-pro"
@@ -126,16 +135,16 @@ workspaces:
 
 To optimize costs and speed, the orchestrator divides operations across three compute tiers defined in the `llm` block.
 
-* **Base Tier (Tier 1):** This tier expects a locally-hosted model (e.g., `qwen2.5:32b` via Ollama). The agent exclusively uses this tier for initial intent parsing, conversational chat, memory extraction, and simple PR evaluation.
-* **Standard Tier (Tier 2):** Fast, low-cost API models. Supported cloud providers include DeepSeek. Used for medium-complexity coding and workspace tasks.
-* **Frontier Tier (Tier 3):** High-capability models. Supported cloud providers include Gemini and Anthropic. Reserved strictly for high-complexity tasks.
+* **Base Tier (Tier 1):** This tier expects a fast, low-cost model (e.g., `gemini-2.5-flash` via a cloud provider, or `qwen2.5:32b` via local Ollama). The agent exclusively uses this tier for initial intent parsing, conversational chat, memory extraction, and simple PR evaluation.
+* **Standard Tier (Tier 2):** Fast, moderate-cost API execution layer. While any supported cloud provider can be mapped to this tier, it is typically populated with low-latency, balanced models (such as `deepseek-v4-flash` or `gpt-5.4-mini`) to handle iterative, multi-file execution tasks cleanly without consuming the high-cost tokens of the frontier layer.
+* **Frontier Tier (Tier 3):** Premium-tier complex reasoning layer. Reserved strictly for high-complexity tasks, repository-wide architectural refactors, or advanced structural reasoning. Any supported cloud provider can be configured here based on preference, though it is typically populated with top-tier reasoning engines (such as `claude-sonnet-4-6`, `gemini-2.5-pro`, or `deepseek-v4-pro`).
 
 ### How Tier Escalation Works
 
 Unlike systems that require manual model selection for every prompt, the ingress router handles this autonomously:
 
 1. **Dynamic Task Classification:** When a message arrives, the Tier 1 model classifies the `task_complexity`. If the task is deemed highly complex, the execution phase is automatically escalated to the Frontier Tier.
-2. **Upward Fault Tolerance & Fallbacks:** The orchestrator utilizes a hardcoded "Upward Escalation Rule" to prevent the daemon from hanging due to missing configurations or routing timeouts. If a tier lacks the required API keys, or if the local model times out during the initial intent parsing phase, the system automatically falls back to the next available tier (Tier 2). *(Note: This automatic fallback protects the ingress routing and initialization phases; sudden runtime connection drops during the actual task execution will trigger a safety retry loop rather than an automatic tier escalation)*.
+2. **Upward Fault Tolerance & Fallbacks:** The orchestrator utilizes a hardcoded "Upward Escalation Rule" to prevent the daemon from hanging due to missing configurations or routing timeouts. If a tier lacks the required API keys, or if the base model times out during the initial intent parsing phase, the system automatically falls back to the next available tier (Tier 2). *(Note: This automatic fallback protects the ingress routing and initialization phases; sudden runtime connection drops during the actual task execution will trigger a safety retry loop rather than an automatic tier escalation)*.
 3. **Manual Overrides & Specific Model Selection:** You can manually force a tier escalation via Telegram by including `/use:standard` or `/use:frontier` anywhere in your prompt. Alternatively, if you want to bypass the tier system entirely and target a specific model defined in your config, you can use the `/use:alias` syntax (e.g., `/use:claude` or `/use:deepseek`).
 4. **Human-in-the-Loop Disambiguation:** If the Tier 1 router determines your request is too ambiguous to map to a workspace, it suspends execution and sends a clarifying question back to Telegram before spending tokens on an execution model.
 
