@@ -10,12 +10,19 @@ An autonomous, FastAPI-based orchestrator that securely manages local repositori
 
 ## 🎬 See it in Action
 
-https://github.com/user-attachments/assets/20ca269a-5c42-4dce-b3fb-cfc62e2434fa
+https://github.com/user-attachments/assets/e85a6777-02d9-4ba8-889f-05de96925985
+
+### ⚙️ Demo LLM Configuration
+* **Base / Routing Tier:** `gemini-2.5-flash`
+* **Standard Tier:** `deepseek-v4-flash`
+* **Frontier Tier:** `claude-sonnet-4-6`
+
+---
 
 *Check out the Pull Requests autonomously generated in this demo:*
-* **Scenario 1:** [langgraph-workspace-agent#17](https://github.com/chuo-v/langgraph-workspace-agent/pull/17)
-* **Scenario 2:** [langgraph-workspace-agent-sandbox#17](https://github.com/chuo-v/langgraph-workspace-agent-sandbox/pull/17)
-* **Scenario 3:** [langgraph-workspace-agent#19](https://github.com/chuo-v/langgraph-workspace-agent/pull/19)
+* **Scenario 1:** [langgraph-workspace-agent#34](https://github.com/chuo-v/langgraph-workspace-agent/pull/34)
+* **Scenario 2:** [langgraph-workspace-agent-sandbox#32](https://github.com/chuo-v/langgraph-workspace-agent-sandbox/pull/32)
+* **Scenario 3:** [langgraph-workspace-agent#35](https://github.com/chuo-v/langgraph-workspace-agent/pull/35)
 
 ---
 
