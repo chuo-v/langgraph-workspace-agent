@@ -38,21 +38,28 @@ llm:
         provider: "gemini"
         model_name: "gemini-2.5-flash"
 
-      # Example for local hosting (uncomment to use local Ollama instead):
+      # Optional local hosting alternative (uncomment to add as a
+      # selectable model alias via /use:qwen_local):
       # qwen_local:
       #   provider: "ollama"
       #   model_name: "qwen2.5:32b"
 
   standard_tier:
-    default_model: "deepseek_fast"
+    default_model: "deepseek_flash"
     available_models:
-      deepseek_fast:
+      deepseek_flash:
         provider: "deepseek"
-        model_name: "deepseek-chat"
+        model_name: "deepseek-v4-flash"
 
   frontier_tier:
-    default_model: "gemini_pro"
+    default_model: "claude"
     available_models:
+      claude:
+        provider: "anthropic"
+        model_name: "claude-sonnet-4-6"
+      deepseek_pro:
+        provider: "deepseek"
+        model_name: "deepseek-v4-pro"
       gemini_pro:
         provider: "gemini"
         model_name: "gemini-2.5-pro"
