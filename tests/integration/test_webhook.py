@@ -44,7 +44,7 @@ def setup_env(monkeypatch):
 
 
 # ==========================================
-# Component: active_thread (Session Management)
+# Workflow: active_thread (Session Management)
 # ==========================================
 
 
@@ -77,7 +77,7 @@ def test_active_thread_fallback_memory():
 
 
 # ==========================================
-# Component: _format_final_response
+# Workflow: _format_final_response (Response Formatting)
 # ==========================================
 
 
