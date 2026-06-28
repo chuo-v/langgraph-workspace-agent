@@ -16,15 +16,9 @@ For macOS environments, apply the following system settings:
 Ensure the following tools are installed on your host machine:
 * **Git:** For cloning repositories and allowing the agent's MCP servers to manage your code.
 * **Docker & Docker Compose:** The entire orchestration layer, memory store, and sandbox environments run in containers. If using Apple Silicon, ensure you install the ARM64-compatible version of Docker Desktop.
-* **Ollama (For Local Inference):** The agent relies on the Base Tier (Tier 1) as its foundational engine to perform all continuous background tasks, including intent routing, PR evaluation, and memory extraction. To ensure the agent can function and process these tasks out-of-the-box, you must install [Ollama](https://ollama.com/) natively on the host machine.
+* **LLM Inference Engine (Cloud or Local):** The agent relies on the Base Tier (Tier 1) as its foundational engine to perform background tasks, including intent routing and memory extraction. You can use fast, low-cost cloud models (like Gemini 2.5 Flash) for this tier. If you prefer to keep these tasks entirely local, you can optionally install [Ollama](https://ollama.com/) natively on the host machine and pull the default models (`ollama pull qwen2.5:32b` and `ollama pull bge-small`).
 
-  Once installed, start the service and pull the default reasoning and embedding models:
-  ```bash
-  ollama pull qwen2.5:32b
-  ollama pull bge-small
-  ```
-
-> **Hardware Constraints:** If the host machine lacks the memory to comfortably run a 32B parameter model, smaller alternatives (e.g., `llama3.1:8b` or `qwen2.5:14b`) can be pulled instead. If an alternative model is used, the `model_name` in the `base_tier` block of your `config.yaml` **must** be updated to match the new model tag. Please note that while smaller models will allow the agent to function, their accuracy in complex routing and evaluation scenarios has not been rigorously tested.
+> **Hardware Constraints & Cloud Alternatives:** If your host machine lacks the memory to comfortably run larger local models (like the default 32B parameter model), it is highly recommended to configure a low-cost cloud provider (e.g., Gemini Flash or DeepSeek) for your Base Tier. While you *can* step down to smaller local alternatives (like 8B or 14B class models), please note that their accuracy in complex routing and evaluation scenarios may be lower and has not been rigorously tested.
 
 ## Step 3: Cloning and Securing the Environment
 
@@ -75,9 +69,9 @@ Open the `.env` file and populate the necessary credentials:
 * **Webhook Noise Mitigation:** When setting up the actual webhook on your GitHub repository settings, select **"Let me select individual events"** and check *only* **Pull requests** and **Issue comments**. Leaving it on the default "Send me everything" will cause GitHub to blast payloads for every minor repository event (stars, branch pushes, etc.), which will needlessly flood your agent's server logs.
 
 4. **LLM Tiering:**
-* Define your `STANDARD_PROVIDER` (e.g., `deepseek` or `openai`) and `FRONTIER_PROVIDER` (e.g., `anthropic` or `gemini`).
-* Add your corresponding API keys (e.g., `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`).
-* *Note:* Tier 1 relies entirely on your local `OLLAMA_API_BASE` and requires no keys.
+* Define your `BASE_PROVIDER`, `STANDARD_PROVIDER`, and `FRONTIER_PROVIDER` (e.g., `anthropic`, `deepseek`, `gemini`, `openai`).
+* Add your corresponding API keys for the chosen providers (e.g., `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`).
+* *Note:* If you are utilizing a local Ollama instance for your Base Tier, it will rely on your `OLLAMA_API_BASE` and requires no keys.
 
 
 5. **Filesystem & State Configuration:**

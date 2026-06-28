@@ -18,7 +18,7 @@ The agent maintains a strictly typed dictionary (`AgentState`) as its single sou
 ### Node Progression & Key Components
 
 1. **Ingress & Triage (`parse_intent_node`):**
-   When a webhook is received, this node intercepts the payload and isolates the most recent conversational turns. It invokes a localized chain that probabilistically determines the user's intent and inferred workspace. It also applies the **Upward Escalation Rule**: if a localized Tier 1 model times out or fails, a custom `ThreadPoolExecutor` gracefully catches the failure and seamlessly escalates the request to a Tier 2 API.
+   When a webhook is received, this node intercepts the payload and isolates the most recent conversational turns. It invokes a fast Base Tier chain that probabilistically determines the user's intent and inferred workspace. It also applies the **Upward Escalation Rule**: if a Tier 1 model times out or fails, a custom `ThreadPoolExecutor` gracefully catches the failure and seamlessly escalates the request to a Tier 2 API.
 2. **The Execution Loop (`execute_task_node` & `workspace_tools_node`):**
    * **Context Assembly:** `execute_task_node` compiles a hybrid context array, deliberately filtering out past orchestrator success markers to prevent LLM hallucination and context poisoning.
    * **Sequential Execution:** Unlike standard web-search agents that can run tools asynchronously, `workspace_tools_node` enforces **strict sequential tool execution**. This architectural choice actively prevents race conditions when multiple file-write or search-and-replace tools attempt to interact with the same local file simultaneously.
