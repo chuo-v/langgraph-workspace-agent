@@ -2,7 +2,9 @@ import concurrent.futures
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 
@@ -43,7 +45,6 @@ from src.workspace_agent.tools.github import (
     open_pull_request,
     set_commit_status,
     sync_repository,
-    sync_to_commit,
     update_pull_request,
 )
 from src.workspace_agent.tools.registry import agent_tools, execute_tool_call
@@ -1277,6 +1278,13 @@ def _execute_ci_suites(
 
     results = []
 
+    # Inject the uv .venv into the execution environment
+    env = os.environ.copy()
+    venv_path = os.path.join(expanded_target_path, ".venv")
+    if os.path.exists(venv_path):
+        env["VIRTUAL_ENV"] = venv_path
+        env["PATH"] = f"{os.path.join(venv_path, 'bin')}:{env.get('PATH', '')}"
+
     # 2. Execute each suite strictly sequentially
     for suite in ci_suites:
         # Check if a newer commit preempted us before we even start this suite
@@ -1292,6 +1300,7 @@ def _execute_ci_suites(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=env,
             )
 
             # Store the PID so a newer commit can preemptively kill this process
@@ -1516,14 +1525,11 @@ def _acquire_preemptive_lock(
 def _release_preemptive_lock_and_cleanup(
     target_path: str,
     run_id: str,
-    expanded_target_path: str,
-    target_branch: str,
-    pr_number: int | None = None,
+    tmp_dir: str | None = None,
 ) -> None:
-    """Releases the redis lock if we still own it, and restores/cleans the git branch."""
+    """Releases the redis lock if we still own it, and safely GC's the tmp dir."""
     workspace_lock_id = f"ci_job:{target_path}"
     pid_key = f"ci_pid:{target_path}"
-    owns_lock = True
 
     if redis_client:
         try:
@@ -1540,30 +1546,18 @@ def _release_preemptive_lock_and_cleanup(
                     redis_client.srem("active_ci_jobs", workspace_lock_id)
                     redis_client.delete(workspace_lock_id)
                     redis_client.delete(pid_key)
-                else:
-                    # A newer commit preempted us, leave the lock alone!
-                    owns_lock = False
+                # If a newer commit preempted us, we just leave the lock alone.
         except Exception as e:
             print(f"Warning: Failed to verify Redis lock ownership: {e}")
 
-    # 5. Cleanup: Restore the repository and delete the temp CI branch
-    if owns_lock:
+    # 5. Cleanup: Delete the ephemeral directory.
+    # We do this regardless of lock ownership because every run gets a unique tmp_dir!
+    if tmp_dir and os.path.exists(tmp_dir):
         try:
-            if pr_number:
-                # Target the exact branch name created by sync_to_commit
-                temp_branch = f"agent/ci-pr-{pr_number}"
-                cleanup_local_branch(expanded_target_path, target_branch, temp_branch)
-            else:
-                # Fallback for standard commits that don't generate PR branches
-                sync_repository(expanded_target_path, target_branch)
+            shutil.rmtree(tmp_dir)
+            print(f"Agentic CI: Ephemeral workspace {tmp_dir} cleaned up successfully.")
         except Exception as e:
-            # Log non-fatal error but don't crash the workflow
-            print(f"Warning: Failed to restore/cleanup branch after CI: {e}", flush=True)
-    else:
-        print(
-            "Agentic CI: Branch cleanup skipped. "
-            "Repository is currently being tested by a newer commit."
-        )
+            print(f"Warning: Failed to GC temporary CI directory {tmp_dir}: {e}")
 
 
 def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
@@ -1576,7 +1570,6 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
     repo_full_name = state.get("repo_full_name")
     commit_sha = state.get("commit_sha")
     pr_number = state.get("pr_number")
-    target_branch = state.get("target_branch", "main")
 
     if not target_path or not pr_number:
         return {}
@@ -1586,10 +1579,6 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
     )
 
     if not workspace_config or not workspace_config.ci_suites:
-        print(
-            f"Warning: Agentic CI skipped. No 'ci_suites' found in config for {target_path}",
-            flush=True,
-        )
         return {"ci_results": []}
 
     # ==========================================
@@ -1602,41 +1591,102 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
 
     # Lock acquired (or bypassed via fail-open), proceed with execution
     expanded_target_path = os.path.expanduser(target_path)
+    tmp_dir = None
 
     try:
-        # 0. Sync workspace to the exact PR commit safely before running tests
-        sync_res = json.loads(
-            sync_to_commit(expanded_target_path, commit_sha=commit_sha, pr_number=pr_number)
+        # 0. Generate unique ephemeral directory
+        tmp_dir = tempfile.mkdtemp(prefix=f"ci_job_{run_id}_")
+        print(f"Agentic CI: Creating ephemeral workspace at {tmp_dir}")
+
+        # 1. Isolate: Clone the host repository to the /tmp directory locally (extremely fast)
+        subprocess.run(
+            ["git", "clone", expanded_target_path, tmp_dir], check=True, capture_output=True
         )
-        if sync_res.get("status") == "error":
-            print(f"Agentic CI sync error: {sync_res}", flush=True)
-            if commit_sha:
-                set_commit_status(
-                    directory=target_path,
-                    commit_sha=commit_sha,
-                    state="error",
-                    context_str="Agentic CI / Setup",
-                    description="Failed to checkout PR branch for testing.",
-                    repo_full_name=repo_full_name,
-                )
-            return {"ci_results": []}
 
-        active_commit_sha = sync_res.get("commit")
+        # 2. Checkout exact PR commit from origin
+        # We inject the credential helper just in case the remote requires auth
+        github_token = os.getenv("GITHUB_TOKEN", "")
+        cred_helper = (
+            f'!f() {{ echo "username=x-access-token"; echo "password={github_token}"; }}; f'
+        )
 
-        # Execute all suites cleanly using the helper
+        # Explicitly build the GitHub URL so we don't fetch from the local 'origin'
+        github_url = f"https://github.com/{repo_full_name}.git"
+
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                f"credential.helper={cred_helper}",
+                "fetch",
+                github_url,
+                f"pull/{pr_number}/head",
+            ],
+            cwd=tmp_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "FETCH_HEAD"], cwd=tmp_dir, check=True, capture_output=True
+        )
+
+        active_commit_sha = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_dir)
+            .decode("utf-8")
+            .strip()
+        )
+
+        # 3. Dependency Caching: Use uv to build an ephemeral .venv lightning fast
+        print(f"Agentic CI: Building isolated .venv using uv in {tmp_dir}...")
+        subprocess.run(["uv", "venv"], cwd=tmp_dir, check=True, capture_output=True)
+
+        req_file = None
+        if os.path.exists(os.path.join(tmp_dir, "requirements-dev.txt")):
+            req_file = "requirements-dev.txt"
+        elif os.path.exists(os.path.join(tmp_dir, "requirements.txt")):
+            req_file = "requirements.txt"
+
+        if req_file:
+            env = os.environ.copy()
+            env["VIRTUAL_ENV"] = os.path.join(tmp_dir, ".venv")
+            env["PATH"] = f"{os.path.join(tmp_dir, '.venv', 'bin')}:{env.get('PATH', '')}"
+            subprocess.run(
+                ["uv", "pip", "install", "-r", req_file],
+                cwd=tmp_dir,
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+            print(f"Agentic CI: Dependencies installed successfully from {req_file}.")
+
+        # 4. Execute all suites in the isolated environment
         results = _execute_ci_suites(
             target_path=target_path,
-            expanded_target_path=expanded_target_path,
+            expanded_target_path=tmp_dir,
             active_commit_sha=active_commit_sha,
             ci_suites=workspace_config.ci_suites,
             repo_full_name=repo_full_name,
             run_id=run_id,
         )
 
-        # 3. Post Consolidated PR Comment
+        # 5. Post Consolidated PR Comment
         _post_ci_results_comment(target_path, pr_number, repo_full_name, results)
 
         return {"ci_results": results}
+
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.decode("utf-8", errors="ignore") if e.stderr else str(e)
+        print(f"Agentic CI setup error: {err_msg}", flush=True)
+        if commit_sha:
+            set_commit_status(
+                directory=target_path,
+                commit_sha=commit_sha,
+                state="error",
+                context_str="Agentic CI / Setup",
+                description="Failed to prepare isolated CI environment.",
+                repo_full_name=repo_full_name,
+            )
+        return {"ci_results": []}
 
     except InterruptedError as e:
         # We were gracefully aborted by a newer commit, exit quietly.
@@ -1644,10 +1694,8 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
         return {"ci_results": []}
 
     finally:
-        # 4. Release Concurrency Lock & Cleanup
-        _release_preemptive_lock_and_cleanup(
-            target_path, run_id, expanded_target_path, target_branch, pr_number
-        )
+        # 6. Release Concurrency Lock & GC the isolated directory
+        _release_preemptive_lock_and_cleanup(target_path, run_id, tmp_dir=tmp_dir)
 
 
 # ==========================================
