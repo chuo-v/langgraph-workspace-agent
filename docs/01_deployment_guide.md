@@ -70,7 +70,7 @@ Open the `.env` file and populate the necessary credentials:
 
 4. **LLM Tiering:**
 * Define your `BASE_PROVIDER`, `STANDARD_PROVIDER`, and `FRONTIER_PROVIDER` (e.g., `anthropic`, `deepseek`, `gemini`, `openai`).
-* Add your corresponding API keys for the chosen providers (e.g., `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`).
+* Add your corresponding API keys for the chosen providers (e.g., `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`).
 * *Note:* If you are utilizing a local Ollama instance for your Base Tier, it will rely on your `OLLAMA_API_BASE` and requires no keys.
 
 
