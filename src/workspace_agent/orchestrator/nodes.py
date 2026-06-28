@@ -1514,9 +1514,13 @@ def _acquire_preemptive_lock(
 
 
 def _release_preemptive_lock_and_cleanup(
-    target_path: str, run_id: str, expanded_target_path: str, target_branch: str
+    target_path: str,
+    run_id: str,
+    expanded_target_path: str,
+    target_branch: str,
+    pr_number: int | None = None,
 ) -> None:
-    """Releases the redis lock if we still own it, and restores the git branch."""
+    """Releases the redis lock if we still own it, and restores/cleans the git branch."""
     workspace_lock_id = f"ci_job:{target_path}"
     pid_key = f"ci_pid:{target_path}"
     owns_lock = True
@@ -1542,13 +1546,19 @@ def _release_preemptive_lock_and_cleanup(
         except Exception as e:
             print(f"Warning: Failed to verify Redis lock ownership: {e}")
 
-    # 5. Cleanup: Restore the repository to the target_branch
+    # 5. Cleanup: Restore the repository and delete the temp CI branch
     if owns_lock:
         try:
-            sync_repository(expanded_target_path, target_branch)
+            if pr_number:
+                # Target the exact branch name created by sync_to_commit
+                temp_branch = f"agent/ci-pr-{pr_number}"
+                cleanup_local_branch(expanded_target_path, target_branch, temp_branch)
+            else:
+                # Fallback for standard commits that don't generate PR branches
+                sync_repository(expanded_target_path, target_branch)
         except Exception as e:
             # Log non-fatal error but don't crash the workflow
-            print(f"Warning: Failed to restore branch after CI: {e}", flush=True)
+            print(f"Warning: Failed to restore/cleanup branch after CI: {e}", flush=True)
     else:
         print(
             "Agentic CI: Branch cleanup skipped. "
@@ -1636,7 +1646,7 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
     finally:
         # 4. Release Concurrency Lock & Cleanup
         _release_preemptive_lock_and_cleanup(
-            target_path, run_id, expanded_target_path, target_branch
+            target_path, run_id, expanded_target_path, target_branch, pr_number
         )
 
 

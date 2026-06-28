@@ -21,6 +21,7 @@ from src.workspace_agent.orchestrator.nodes import (
     _generate_pr_metadata,
     _invoke_escalating_router,
     _is_tool_error,
+    _release_preemptive_lock_and_cleanup,
     _resolve_execution_tier,
     _sanitize_llm_response,
     agentic_ci_node,
@@ -1632,6 +1633,68 @@ def test_agentic_ci_node_error_timeout(mocker):
 
     mock_comment.assert_called_once()
     assert "❌ Fail" in mock_comment.call_args[1]["body"]
+
+
+def test_release_preemptive_lock_success_with_pr_cleans_branch(mocker):
+    """Green Path: Helper safely deletes the temporary CI branch when PR number is present."""
+    mock_redis = mocker.patch("src.workspace_agent.orchestrator.nodes.redis_client")
+    mock_sync = mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
+    mock_cleanup = mocker.patch("src.workspace_agent.orchestrator.nodes.cleanup_local_branch")
+
+    mock_redis.get.return_value = b"test-run-id"
+
+    _release_preemptive_lock_and_cleanup(
+        target_path="/tmp/test",
+        run_id="test-run-id",
+        expanded_target_path="/tmp/test",
+        target_branch="main",
+        pr_number=123,
+    )
+
+    mock_cleanup.assert_called_once_with("/tmp/test", "main", "agent/ci-pr-123")
+    mock_sync.assert_not_called()
+
+
+def test_release_preemptive_lock_fallback_without_pr_syncs_repo(mocker):
+    """Edge Path: Helper falls back to standard sync if triggered without a PR number."""
+    mock_redis = mocker.patch("src.workspace_agent.orchestrator.nodes.redis_client")
+    mock_sync = mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
+    mock_cleanup = mocker.patch("src.workspace_agent.orchestrator.nodes.cleanup_local_branch")
+
+    mock_redis.get.return_value = b"test-run-id"
+
+    _release_preemptive_lock_and_cleanup(
+        target_path="/tmp/test",
+        run_id="test-run-id",
+        expanded_target_path="/tmp/test",
+        target_branch="main",
+        pr_number=None,
+    )
+
+    mock_sync.assert_called_once_with("/tmp/test", "main")
+    mock_cleanup.assert_not_called()
+
+
+def test_release_preemptive_lock_error_cleanup_exception_caught(mocker):
+    """
+    Red Path: Ensures OS-level file locks or Git errors during cleanup do not crash the workflow.
+    """
+    mock_redis = mocker.patch("src.workspace_agent.orchestrator.nodes.redis_client")
+    mock_cleanup = mocker.patch("src.workspace_agent.orchestrator.nodes.cleanup_local_branch")
+
+    mock_redis.get.return_value = b"test-run-id"
+    mock_cleanup.side_effect = Exception("Git locked")
+
+    # The test runner will fail if the try/except block does not successfully swallow this error
+    _release_preemptive_lock_and_cleanup(
+        target_path="/tmp/test",
+        run_id="test-run-id",
+        expanded_target_path="/tmp/test",
+        target_branch="main",
+        pr_number=456,
+    )
+
+    mock_cleanup.assert_called_once()
 
 
 # ==========================================
