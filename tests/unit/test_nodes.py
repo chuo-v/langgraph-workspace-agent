@@ -1523,10 +1523,14 @@ def test_agentic_ci_node_success_all_pass(mocker):
         "src.workspace_agent.orchestrator.nodes.settings.workspaces", {"test_ws": mock_workspace}
     )
     mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.sync_to_commit",
-        return_value='{"status": "success", "commit": "sha123"}',
+        "src.workspace_agent.orchestrator.nodes.tempfile.mkdtemp", return_value="/tmp/ci_job_123"
     )
-    mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
+    mock_run = mocker.patch("src.workspace_agent.orchestrator.nodes.subprocess.run")
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.subprocess.check_output", return_value=b"sha123\n"
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.os.path.exists", return_value=True)
+    mocker.patch("src.workspace_agent.orchestrator.nodes.shutil.rmtree")
 
     # mock subprocess.Popen for both suites
     mock_process = mocker.Mock()
@@ -1551,6 +1555,9 @@ def test_agentic_ci_node_success_all_pass(mocker):
 
     # verify OS processes ran
     assert mock_popen.call_count == 2
+
+    # verify the setup subprocesses ran (git clone, fetch, checkout, uv venv, uv pip install)
+    assert mock_run.call_count == 5
 
     # verify github pending & success statuses sent
     assert mock_set_status.call_count == 4  # 2 pending, 2 success
@@ -1593,10 +1600,14 @@ def test_agentic_ci_node_error_timeout(mocker):
         "src.workspace_agent.orchestrator.nodes.settings.workspaces", {"test_ws": mock_workspace}
     )
     mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.sync_to_commit",
-        return_value='{"status": "success", "commit": "sha123"}',
+        "src.workspace_agent.orchestrator.nodes.tempfile.mkdtemp", return_value="/tmp/ci_job_123"
     )
-    mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
+    mocker.patch("src.workspace_agent.orchestrator.nodes.subprocess.run")
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.subprocess.check_output", return_value=b"sha123\n"
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.os.path.exists", return_value=False)
+    mocker.patch("src.workspace_agent.orchestrator.nodes.shutil.rmtree")
 
     # Raise TimeoutExpired to simulate a hanging execution
     mock_process = mocker.Mock()
@@ -1635,66 +1646,58 @@ def test_agentic_ci_node_error_timeout(mocker):
     assert "❌ Fail" in mock_comment.call_args[1]["body"]
 
 
-def test_release_preemptive_lock_success_with_pr_cleans_branch(mocker):
-    """Green Path: Helper safely deletes the temporary CI branch when PR number is present."""
+def test_release_preemptive_lock_success_cleans_tmp_dir(mocker):
+    """Green Path: Helper safely garbage collects the ephemeral CI directory."""
     mock_redis = mocker.patch("src.workspace_agent.orchestrator.nodes.redis_client")
-    mock_sync = mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
-    mock_cleanup = mocker.patch("src.workspace_agent.orchestrator.nodes.cleanup_local_branch")
+    mocker.patch("src.workspace_agent.orchestrator.nodes.os.path.exists", return_value=True)
+    mock_rmtree = mocker.patch("src.workspace_agent.orchestrator.nodes.shutil.rmtree")
 
     mock_redis.get.return_value = b"test-run-id"
 
     _release_preemptive_lock_and_cleanup(
         target_path="/tmp/test",
         run_id="test-run-id",
-        expanded_target_path="/tmp/test",
-        target_branch="main",
-        pr_number=123,
+        tmp_dir="/tmp/ci_job_123",
     )
 
-    mock_cleanup.assert_called_once_with("/tmp/test", "main", "agent/ci-pr-123")
-    mock_sync.assert_not_called()
+    mock_rmtree.assert_called_once_with("/tmp/ci_job_123")
 
 
-def test_release_preemptive_lock_fallback_without_pr_syncs_repo(mocker):
-    """Edge Path: Helper falls back to standard sync if triggered without a PR number."""
+def test_release_preemptive_lock_skips_cleanup_if_no_tmp_dir(mocker):
+    """Edge Path: Helper skips garbage collection if tmp_dir is None."""
     mock_redis = mocker.patch("src.workspace_agent.orchestrator.nodes.redis_client")
-    mock_sync = mocker.patch("src.workspace_agent.orchestrator.nodes.sync_repository")
-    mock_cleanup = mocker.patch("src.workspace_agent.orchestrator.nodes.cleanup_local_branch")
+    mock_rmtree = mocker.patch("src.workspace_agent.orchestrator.nodes.shutil.rmtree")
 
     mock_redis.get.return_value = b"test-run-id"
 
     _release_preemptive_lock_and_cleanup(
         target_path="/tmp/test",
         run_id="test-run-id",
-        expanded_target_path="/tmp/test",
-        target_branch="main",
-        pr_number=None,
+        tmp_dir=None,
     )
 
-    mock_sync.assert_called_once_with("/tmp/test", "main")
-    mock_cleanup.assert_not_called()
+    mock_rmtree.assert_not_called()
 
 
 def test_release_preemptive_lock_error_cleanup_exception_caught(mocker):
     """
-    Red Path: Ensures OS-level file locks or Git errors during cleanup do not crash the workflow.
+    Red Path: Ensures OS-level file locks or IO errors during cleanup do not crash the workflow.
     """
     mock_redis = mocker.patch("src.workspace_agent.orchestrator.nodes.redis_client")
-    mock_cleanup = mocker.patch("src.workspace_agent.orchestrator.nodes.cleanup_local_branch")
+    mocker.patch("src.workspace_agent.orchestrator.nodes.os.path.exists", return_value=True)
+    mock_rmtree = mocker.patch("src.workspace_agent.orchestrator.nodes.shutil.rmtree")
 
     mock_redis.get.return_value = b"test-run-id"
-    mock_cleanup.side_effect = Exception("Git locked")
+    mock_rmtree.side_effect = Exception("Directory busy")
 
     # The test runner will fail if the try/except block does not successfully swallow this error
     _release_preemptive_lock_and_cleanup(
         target_path="/tmp/test",
         run_id="test-run-id",
-        expanded_target_path="/tmp/test",
-        target_branch="main",
-        pr_number=456,
+        tmp_dir="/tmp/ci_job_123",
     )
 
-    mock_cleanup.assert_called_once()
+    mock_rmtree.assert_called_once()
 
 
 # ==========================================

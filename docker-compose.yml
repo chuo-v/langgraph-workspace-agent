@@ -28,6 +28,8 @@ services:
       - LANGFUSE_HOST=http://langfuse:3000
       # Direct the agent to write its memory to the isolated state directory
       - AGENT_PROFILE_PATH=/app/state/user_profile.json
+      # Force uv to use a persistent directory to cache wheel downloads across isolated CI runs
+      - UV_CACHE_DIR=/app/.uv_cache
     volumes:
       # Pass the Docker socket so the Python SDK can spawn ephemeral sibling sandboxes
       - /var/run/docker.sock:/var/run/docker.sock
@@ -39,6 +41,8 @@ services:
       - ${WORKSPACE_AGENT_STATE_DIR:-./agent_state}:/app/state
       # Inject the dynamic routing and workspace configuration file
       - ${WORKSPACE_AGENT_CONFIG_PATH:-./config.yaml}:/app/config.yaml
+      # Mount the persistent cache to eliminate cold-start dependency installations in ephemeral /tmp workspaces
+      - uv_cache:/app/.uv_cache
     ports:
       # Webhook reverse-proxy will route incoming traffic here
       - "127.0.0.1:8000:8000"
@@ -248,6 +252,7 @@ volumes:
   postgres_data:
   clickhouse_data:
   minio_data:
+  uv_cache:
 
 networks:
   default:
