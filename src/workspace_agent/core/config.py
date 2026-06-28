@@ -17,6 +17,9 @@ class OrchestrationConfig(BaseModel):
     target_branch: str = Field(
         default="main", description="The default Git branch for agent operations."
     )
+    target_remote: str = Field(
+        default="origin", description="The default Git remote for agent operations."
+    )
     allowed_github_users: list[str] = Field(
         default_factory=list,
         description="List of GitHub usernames authorized to trigger agent workflows via webhooks.",
@@ -60,6 +63,7 @@ class WorkspaceConfig(BaseModel):
     description: str = Field(..., min_length=10)
     path: str = Field(...)
     target_branch: str | None = Field(default=None, description="Overrides global target_branch")
+    target_remote: str | None = Field(default=None, description="Overrides global target_remote")
     pre_commit_suites: list[CISuiteConfig] = Field(
         default_factory=list,
         description=(

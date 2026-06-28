@@ -11,6 +11,8 @@
 agent:
   # The default branch the agent will sync and branch off from
   target_branch: "main"
+  # The default Git remote the agent will interact with
+  target_remote: "origin"
   # List of GitHub usernames authorized to trigger the agent via PRs or ChatOps comments.
   allowed_github_users:
     - "your_github_username"
@@ -81,6 +83,12 @@ workspaces:
   example-project:
     description: "An example repository for the agent to manage."
     path: "/Users/username/git/example-project"
+    # [OPTIONAL] Overrides the global agent.target_branch for this specific workspace.
+    # If omitted, the agent securely defaults to the global target_branch (e.g., "main").
+    target_branch: "develop"
+    # [OPTIONAL] Overrides the global agent.target_remote for this specific workspace.
+    # If omitted, defaults to the global target_remote configuration.
+    target_remote: "upstream"
     pre_commit_suites:
       - name: "Ruff Format"
         command: "ruff format ."
