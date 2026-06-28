@@ -6,6 +6,8 @@ import subprocess
 import time
 import uuid
 
+import psutil
+import redis
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
@@ -28,7 +30,7 @@ from src.workspace_agent.orchestrator.router import (
     TIER_FRONTIER,
     TIER_STANDARD,
     TerminalEscalationError,
-    get_execution_llm,
+    get_execution_llm_sequence,
     get_intent_router,
     get_tier_for_model,
 )
@@ -53,9 +55,52 @@ from src.workspace_agent.tools.registry import agent_tools, execute_tool_call
 
 MAX_CONTEXT_LENGTH = 500
 MAX_DIFF_LENGTH = 40000
-MAX_CONSECUTIVE_TOOL_STEPS = 30
 MAX_GITHUB_COMMENT_LENGTH = 60000
 MAX_FAST_PATH_LEN = 15
+
+
+# ==========================================
+# Redis Initialization
+# ==========================================
+try:
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_client = redis.Redis.from_url(redis_url)
+except Exception as e:
+    print(f"Warning: Failed to initialize Redis in nodes.py: {e}")
+    redis_client = None
+
+
+# ==========================================
+# Runtime Fallback Helper
+# ==========================================
+
+
+def _build_fallback_chain(llms: list, tools: list = None, structured_schema=None):
+    """
+    Constructs a resilient LCEL chain that automatically falls back to higher-tier models
+    if the primary model fails or times out.
+    Applies tools or structured schemas to ALL models in the sequence.
+    """
+    if not llms:
+        raise ValueError("Cannot build fallback chain: No LLMs provided.")
+
+    chains = []
+    for llm in llms:
+        chain = llm
+        if tools:
+            chain = chain.bind_tools(tools)
+        elif structured_schema:
+            model_name = getattr(llm, "model_name", "")
+            if "deepseek" in str(model_name).lower() or "gemini" in str(model_name).lower():
+                chain = chain.with_structured_output(structured_schema, method="function_calling")
+            else:
+                chain = chain.with_structured_output(structured_schema)
+        chains.append(chain)
+
+    primary_chain = chains[0]
+    if len(chains) > 1:
+        return primary_chain.with_fallbacks(chains[1:])
+    return primary_chain
 
 
 # ==========================================
@@ -168,11 +213,14 @@ def _check_circuit_breaker(messages: list) -> dict | None:
         if msg.type in ["ai", "tool"]:
             consecutive_agent_steps += 1
 
-    if consecutive_agent_steps >= MAX_CONSECUTIVE_TOOL_STEPS:
-        loops = MAX_CONSECUTIVE_TOOL_STEPS // 2
+    limit = settings.agent.max_consecutive_tool_steps
+
+    if consecutive_agent_steps >= limit:
+        loops = limit // 2
         abort_msg = (
             "⚠️ **Execution Aborted:** The agent entered a runaway loop by executing "
-            f"tools {loops} times in a row without finalizing the task. Circuit breaker triggered."
+            f"tools {loops} times in a row without finalizing the task. Circuit breaker "
+            "triggered."
         )
         return {
             "messages": [AIMessage(content=abort_msg)],
@@ -346,10 +394,17 @@ def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
 def conversational_reply_node(state: AgentState, config: RunnableConfig = None) -> dict:
     config = config or {}
 
-    # Map conversational queries to the requested model if provided
-    llm = get_execution_llm(
-        requested_tier=TIER_BASE, requested_model_key=state.get("requested_model")
-    )
+    try:
+        # Fetch sequence and construct fallback chain
+        llms = get_execution_llm_sequence(
+            requested_tier=TIER_BASE, requested_model_key=state.get("requested_model")
+        )
+        execution_chain = _build_fallback_chain(llms)
+    except TerminalEscalationError as e:
+        return {
+            "messages": [AIMessage(content=f"⚠️ **Escalation Failed:** {str(e)}")],
+            "is_aborted": True,
+        }
 
     # Inject a system prompt to guide the conversational response and prevent hallucination
     system_prompt = SystemMessage(
@@ -364,7 +419,7 @@ def conversational_reply_node(state: AgentState, config: RunnableConfig = None) 
     # Prepend the system prompt dynamically without permanently saving it to state
     messages_to_send = [system_prompt] + state.get("messages", [])
 
-    response = llm.invoke(messages_to_send, config=config)
+    response = execution_chain.invoke(messages_to_send, config=config)
 
     return {
         "messages": [response],
@@ -699,16 +754,15 @@ def execute_task_node(  # noqa: PLR0911, PLR0915
     if sync_abort_state:
         return sync_abort_state
 
-    # instantiate LLM
+    # instantiate resilient fallback chain
     try:
-        llm = get_execution_llm(requested_tier=tier, requested_model_key=requested_model)
+        llms = get_execution_llm_sequence(requested_tier=tier, requested_model_key=requested_model)
+        execution_chain = _build_fallback_chain(llms, tools=agent_tools)
     except TerminalEscalationError as e:
         return {
             "messages": [AIMessage(content=f"⚠️ **Escalation Failed:** {str(e)}")],
             "is_aborted": True,
         }
-
-    llm_with_tools = llm.bind_tools(agent_tools)
 
     # context assembly
     messages = get_hybrid_context(
@@ -738,7 +792,7 @@ def execute_task_node(  # noqa: PLR0911, PLR0915
 
     # LLM execution & sanitization with API Resilience
     try:
-        response = llm_with_tools.invoke(filtered_messages, config=config)
+        response = execution_chain.invoke(filtered_messages, config=config)
     except Exception as e:
         # catch strict API rate limits, timeouts, or JSON truncation errors
         retry_count = state.get("execution_retry_count", 0)
@@ -1111,9 +1165,10 @@ def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:  
     ).strip()
 
     try:
-        # We use the base tier LLM for fast, reliable evaluation
-        llm = get_execution_llm(requested_tier=TIER_BASE, temperature=0.0)
-        eval_result = llm.invoke(critic_prompt, config=config).content.strip()
+        # Use the base tier LLM for fast, reliable evaluation, wrapping it in fallbacks
+        llms = get_execution_llm_sequence(requested_tier=TIER_BASE, temperature=0.0)
+        eval_chain = _build_fallback_chain(llms)
+        eval_result = eval_chain.invoke(critic_prompt, config=config).content.strip()
     except Exception:
         # Degrade gracefully if API fails and pass it through
         return {"latest_traceback_error": None}
@@ -1205,6 +1260,7 @@ def _execute_ci_suites(
     active_commit_sha: str,
     ci_suites: list,
     repo_full_name: str | None,
+    run_id: str,
 ) -> list[dict]:
     """Helper to isolate CI subprocess executions and status reporting."""
     # 1. Post pending statuses for all suites upfront
@@ -1223,60 +1279,72 @@ def _execute_ci_suites(
 
     # 2. Execute each suite strictly sequentially
     for suite in ci_suites:
+        # Check if a newer commit preempted us before we even start this suite
+        if redis_client and redis_client.get(f"ci_superseded:{run_id}"):
+            raise InterruptedError("Superseded by a newer commit.")
+
         context_str = f"Agentic CI / {suite.name}"
         try:
-            process = subprocess.run(
+            process = subprocess.Popen(
                 suite.command,
                 cwd=expanded_target_path,
                 shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=suite.timeout_seconds,
-                check=False,
             )
 
-            passed = process.returncode == 0
-            logs = f"{process.stdout}\n{process.stderr}".strip()
+            # Store the PID so a newer commit can preemptively kill this process
+            if redis_client:
+                redis_client.set(f"ci_pid:{target_path}", process.pid)
+
+            try:
+                stdout, stderr = process.communicate(timeout=suite.timeout_seconds)
+                passed = process.returncode == 0
+                logs = f"{stdout}\n{stderr}".strip()
+            except subprocess.TimeoutExpired:
+                # Force kill the process tree instantly using psutil
+                try:
+                    parent = psutil.Process(process.pid)
+                    for child in parent.children(recursive=True):
+                        child.kill()
+                    parent.kill()
+                except psutil.NoSuchProcess:
+                    pass
+
+                # Grab whatever output was generated before the timeout kill
+                stdout, stderr = process.communicate()
+                logs = (
+                    f"{stdout}\n{stderr}\n\n"
+                    f"[ERROR: TimeoutExpired] Command forcefully terminated after "
+                    f"{suite.timeout_seconds} seconds."
+                ).strip()
+                passed = False
+            finally:
+                # If we were killed by a newer commit, psutil causes communicate()
+                # to return instantly. We trap that here and abort cleanly before
+                # posting false test results to GitHub.
+                if redis_client and redis_client.get(f"ci_superseded:{run_id}"):
+                    raise InterruptedError("Superseded by a newer commit.")
 
             set_commit_status(
                 directory=target_path,
                 commit_sha=active_commit_sha,
                 state="success" if passed else "failure",
                 context_str=context_str,
-                description="Evaluation passed" if passed else "Evaluation failed",
+                description="Evaluation passed"
+                if passed
+                else "Execution timed out"
+                if not passed and "[ERROR: TimeoutExpired]" in logs
+                else "Evaluation failed",
                 repo_full_name=repo_full_name,
             )
 
             results.append({"name": suite.name, "passed": passed, "logs": logs})
 
-        except subprocess.TimeoutExpired as e:
-            stdout_str = (
-                e.stdout
-                if isinstance(e.stdout, str)
-                else (e.stdout.decode("utf-8", errors="replace") if e.stdout else "")
-            )
-            stderr_str = (
-                e.stderr
-                if isinstance(e.stderr, str)
-                else (e.stderr.decode("utf-8", errors="replace") if e.stderr else "")
-            )
-
-            logs = (
-                f"{stdout_str}\n{stderr_str}\n\n"
-                f"[ERROR: TimeoutExpired] Command timed out after "
-                f"{suite.timeout_seconds} seconds."
-            ).strip()
-
-            set_commit_status(
-                directory=target_path,
-                commit_sha=active_commit_sha,
-                state="failure",
-                context_str=context_str,
-                description="Execution timed out",
-                repo_full_name=repo_full_name,
-            )
-
-            results.append({"name": suite.name, "passed": False, "logs": logs})
+        except InterruptedError:
+            # Bubble up the intentional abort signal
+            raise
         except Exception as e:
             set_commit_status(
                 directory=target_path,
@@ -1291,6 +1359,203 @@ def _execute_ci_suites(
     return results
 
 
+def _handle_concurrency_rejection(
+    target_path: str,
+    pr_number: int,
+    commit_sha: str | None,
+    repo_full_name: str | None,
+    is_already_running: bool,
+    active_jobs: int,
+) -> None:
+    """Helper to post rejection messages when the CI concurrency limit is reached."""
+    max_jobs = settings.agent.max_concurrent_ci_jobs
+    reason = (
+        "A CI/CD job is already running for this repository"
+        if is_already_running
+        else f"Global concurrency limit ({max_jobs}) reached"
+    )
+    print(f"Agentic CI/CD skipped: {reason}. ({active_jobs}/{max_jobs})")
+
+    comment_body = (
+        f"⚠️ **Agentic CI/CD Skipped**\n\n"
+        f"{reason} to preserve system resources. "
+        f"If necessary, please comment `/retest` to try again once the current tests finish."
+    )
+
+    comment_on_pull_request(
+        directory=target_path,
+        pr_number=pr_number,
+        body=comment_body,
+        repo_full_name=repo_full_name,
+    )
+
+    if commit_sha:
+        set_commit_status(
+            directory=target_path,
+            commit_sha=commit_sha,
+            state="error",
+            context_str="Agentic CI/CD / Concurrency",
+            description="Concurrency limit reached. If necessary, comment /retest later.",
+            repo_full_name=repo_full_name,
+        )
+
+
+def _post_ci_results_comment(
+    target_path: str, pr_number: int, repo_full_name: str | None, results: list[dict]
+) -> None:
+    """Helper to format and post the consolidated CI results to GitHub."""
+    if not results:
+        return
+
+    summary_table = "| Suite | Status |\n|---|---|\n"
+    for r in results:
+        status_icon = "✅ Pass" if r["passed"] else "❌ Fail"
+        summary_table += f"| {r['name']} | {status_icon} |\n"
+
+    details_sections = ""
+    for r in results:
+        safe_logs = (
+            r["logs"][:MAX_GITHUB_COMMENT_LENGTH] + "\n...[TRUNCATED]"
+            if len(r["logs"]) > MAX_GITHUB_COMMENT_LENGTH
+            else r["logs"]
+        )
+
+        details_sections += (
+            f"\n<details><summary>Logs: {r['name']}</summary>\n\n"
+            f"```text\n{safe_logs}\n```\n</details>\n"
+        )
+
+    raw_prefix = settings.agent.agent_prefix or ""
+    prefix_str = f"{raw_prefix} " if raw_prefix and not raw_prefix.endswith(" ") else raw_prefix
+
+    comment_body = f"## {prefix_str}Agentic CI/CD Results\n\n{summary_table}\n{details_sections}"
+
+    comment_on_pull_request(
+        directory=target_path,
+        pr_number=pr_number,
+        body=comment_body,
+        repo_full_name=repo_full_name,
+    )
+
+
+def _preempt_stale_ci_run(workspace_lock_id: str, pid_key: str) -> None:
+    """Helper to assassinate an older, superseded Agentic CI test run."""
+    if not redis_client:
+        return
+
+    old_run_id = redis_client.get(workspace_lock_id)
+    if not old_run_id:
+        return
+
+    old_run_id = old_run_id.decode("utf-8") if isinstance(old_run_id, bytes) else old_run_id
+    print(f"Agentic CI: Preempting older execution {old_run_id} for newest commit.")
+
+    # Mark old run as superseded
+    redis_client.setex(f"ci_superseded:{old_run_id}", 3600, "1")
+
+    # Send SIGKILL to the old test suite process tree
+    old_pid = redis_client.get(pid_key)
+    if old_pid:
+        try:
+            parent = psutil.Process(int(old_pid))
+            for child in parent.children(recursive=True):
+                child.kill()
+            parent.kill()
+        except (psutil.NoSuchProcess, TypeError, ValueError):
+            pass
+
+    # Brief pause to let the old LangGraph thread trap
+    # the InterruptedError and exit cleanly
+    time.sleep(1.0)
+
+
+def _acquire_preemptive_lock(
+    target_path: str,
+    run_id: str,
+    pr_number: int,
+    commit_sha: str | None,
+    repo_full_name: str | None,
+) -> bool:
+    """Attempts to acquire the CI lock, preempting older runs if necessary."""
+    if not redis_client:
+        return True
+
+    workspace_lock_id = f"ci_job:{target_path}"
+    pid_key = f"ci_pid:{target_path}"
+
+    try:
+        is_already_running = redis_client.sismember("active_ci_jobs", workspace_lock_id)
+        active_jobs = redis_client.scard("active_ci_jobs")
+        limit_reached = active_jobs >= settings.agent.max_concurrent_ci_jobs
+
+        # Only reject if we hit the limit AND it's not our own repo we can preempt
+        if limit_reached and not is_already_running:
+            _handle_concurrency_rejection(
+                target_path,
+                pr_number,
+                commit_sha,
+                repo_full_name,
+                False,
+                active_jobs,
+            )
+            return False
+
+        if is_already_running:
+            _preempt_stale_ci_run(workspace_lock_id, pid_key)
+
+        # Acquire Lock for this new run
+        redis_client.sadd("active_ci_jobs", workspace_lock_id)
+        redis_client.set(workspace_lock_id, run_id)
+        return True
+    except Exception as e:
+        print(f"Warning: Redis concurrency check failed: {e}")
+        # Fail-open if Redis crashes temporarily so workflow isn't fully blocked
+        return True
+
+
+def _release_preemptive_lock_and_cleanup(
+    target_path: str, run_id: str, expanded_target_path: str, target_branch: str
+) -> None:
+    """Releases the redis lock if we still own it, and restores the git branch."""
+    workspace_lock_id = f"ci_job:{target_path}"
+    pid_key = f"ci_pid:{target_path}"
+    owns_lock = True
+
+    if redis_client:
+        try:
+            current_owner = redis_client.get(workspace_lock_id)
+            if current_owner:
+                current_owner = (
+                    current_owner.decode("utf-8")
+                    if isinstance(current_owner, bytes)
+                    else current_owner
+                )
+
+                if current_owner == run_id:
+                    # We still own the lock, clean it up
+                    redis_client.srem("active_ci_jobs", workspace_lock_id)
+                    redis_client.delete(workspace_lock_id)
+                    redis_client.delete(pid_key)
+                else:
+                    # A newer commit preempted us, leave the lock alone!
+                    owns_lock = False
+        except Exception as e:
+            print(f"Warning: Failed to verify Redis lock ownership: {e}")
+
+    # 5. Cleanup: Restore the repository to the target_branch
+    if owns_lock:
+        try:
+            sync_repository(expanded_target_path, target_branch)
+        except Exception as e:
+            # Log non-fatal error but don't crash the workflow
+            print(f"Warning: Failed to restore branch after CI: {e}", flush=True)
+    else:
+        print(
+            "Agentic CI: Branch cleanup skipped. "
+            "Repository is currently being tested by a newer commit."
+        )
+
+
 def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
     """
     Agentic CI/CD Execution Node.
@@ -1303,8 +1568,6 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
     pr_number = state.get("pr_number")
     target_branch = state.get("target_branch", "main")
 
-    # We must at least have the path and PR number to proceed.
-    # (commit_sha might be missing on ChatOps triggers, we will fetch it dynamically)
     if not target_path or not pr_number:
         return {}
 
@@ -1319,28 +1582,37 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
         )
         return {"ci_results": []}
 
-    expanded_target_path = os.path.expanduser(target_path)
+    # ==========================================
+    # 1. Redis Concurrency Lock (Preemptive)
+    # ==========================================
+    run_id = str(uuid.uuid4())
 
-    # 0. Sync workspace to the exact PR commit safely before running tests
-    sync_res = json.loads(
-        sync_to_commit(expanded_target_path, commit_sha=commit_sha, pr_number=pr_number)
-    )
-    if sync_res.get("status") == "error":
-        print(f"Agentic CI sync error: {sync_res}", flush=True)
-        if commit_sha:
-            set_commit_status(
-                directory=target_path,
-                commit_sha=commit_sha,
-                state="error",
-                context_str="Agentic CI / Setup",
-                description="Failed to checkout PR branch for testing.",
-                repo_full_name=repo_full_name,
-            )
+    if not _acquire_preemptive_lock(target_path, run_id, pr_number, commit_sha, repo_full_name):
         return {"ci_results": []}
 
-    active_commit_sha = sync_res.get("commit")
+    # Lock acquired (or bypassed via fail-open), proceed with execution
+    expanded_target_path = os.path.expanduser(target_path)
 
     try:
+        # 0. Sync workspace to the exact PR commit safely before running tests
+        sync_res = json.loads(
+            sync_to_commit(expanded_target_path, commit_sha=commit_sha, pr_number=pr_number)
+        )
+        if sync_res.get("status") == "error":
+            print(f"Agentic CI sync error: {sync_res}", flush=True)
+            if commit_sha:
+                set_commit_status(
+                    directory=target_path,
+                    commit_sha=commit_sha,
+                    state="error",
+                    context_str="Agentic CI / Setup",
+                    description="Failed to checkout PR branch for testing.",
+                    repo_full_name=repo_full_name,
+                )
+            return {"ci_results": []}
+
+        active_commit_sha = sync_res.get("commit")
+
         # Execute all suites cleanly using the helper
         results = _execute_ci_suites(
             target_path=target_path,
@@ -1348,54 +1620,24 @@ def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
             active_commit_sha=active_commit_sha,
             ci_suites=workspace_config.ci_suites,
             repo_full_name=repo_full_name,
+            run_id=run_id,
         )
 
         # 3. Post Consolidated PR Comment
-        if results:
-            summary_table = "| Suite | Status |\n|---|---|\n"
-            for r in results:
-                status_icon = "✅ Pass" if r["passed"] else "❌ Fail"
-                summary_table += f"| {r['name']} | {status_icon} |\n"
-
-            details_sections = ""
-            for r in results:
-                safe_logs = (
-                    r["logs"][:MAX_GITHUB_COMMENT_LENGTH] + "\n...[TRUNCATED]"
-                    if len(r["logs"]) > MAX_GITHUB_COMMENT_LENGTH
-                    else r["logs"]
-                )
-
-                details_sections += (
-                    f"\n<details><summary>Logs: {r['name']}</summary>\n\n"
-                    f"```text\n{safe_logs}\n```\n</details>\n"
-                )
-
-            raw_prefix = settings.agent.agent_prefix or ""
-            prefix_str = (
-                f"{raw_prefix} " if raw_prefix and not raw_prefix.endswith(" ") else raw_prefix
-            )
-
-            comment_body = (
-                f"## {prefix_str}Agentic CI/CD Results\n\n{summary_table}\n{details_sections}"
-            )
-
-            comment_on_pull_request(
-                directory=target_path,
-                pr_number=pr_number,
-                body=comment_body,
-                repo_full_name=repo_full_name,
-            )
+        _post_ci_results_comment(target_path, pr_number, repo_full_name, results)
 
         return {"ci_results": results}
 
+    except InterruptedError as e:
+        # We were gracefully aborted by a newer commit, exit quietly.
+        print(f"Agentic CI gracefully aborted: {e}", flush=True)
+        return {"ci_results": []}
+
     finally:
-        # 4. Cleanup: Restore the repository to the target_branch
-        # Ensures the agent isn't left stranded in a detached HEAD state on a PR commit
-        try:
-            sync_repository(expanded_target_path, target_branch)
-        except Exception as e:
-            # Log non-fatal error but don't crash the workflow
-            print(f"Warning: Failed to restore branch after CI: {e}", flush=True)
+        # 4. Release Concurrency Lock & Cleanup
+        _release_preemptive_lock_and_cleanup(
+            target_path, run_id, expanded_target_path, target_branch
+        )
 
 
 # ==========================================
@@ -1415,7 +1657,8 @@ def _generate_commit_message(
 
     config = config or {}
     try:
-        llm = get_execution_llm(requested_tier=TIER_BASE, temperature=0.2)
+        llms = get_execution_llm_sequence(requested_tier=TIER_BASE, temperature=0.2)
+        eval_chain = _build_fallback_chain(llms)
 
         # Fast track for huge diffs: just use the blueprint and the first chunk
         chunks = _chunk_git_diff(incremental_diff, MAX_DIFF_LENGTH)
@@ -1431,7 +1674,7 @@ def _generate_commit_message(
             diff_snippet=diff_str,
         ).strip()
 
-        res = llm.invoke(prompt, config=config).content.strip().strip("\"'")
+        res = eval_chain.invoke(prompt, config=config).content.strip().strip("\"'")
         if res:
             return f"{prefix_str}{res}"
     except Exception as e:
@@ -1445,11 +1688,11 @@ def _generate_pr_metadata(
 ) -> tuple[str, str, str]:
     """Helper to generate semantic branch names and PR descriptions using Map-Reduce."""
     config = config or {}
-    llm = get_execution_llm(requested_tier=TIER_BASE, temperature=0.2)
-
-    chunks = _chunk_git_diff(raw_diff, MAX_DIFF_LENGTH)
-
     try:
+        llms = get_execution_llm_sequence(requested_tier=TIER_BASE, temperature=0.2)
+        eval_chain = _build_fallback_chain(llms)
+        chunks = _chunk_git_diff(raw_diff, MAX_DIFF_LENGTH)
+
         # Map phase: Anchor each chunk with the Blueprint and parse file-by-file
         if len(chunks) > 1:
             chunk_summaries = []
@@ -1464,7 +1707,7 @@ def _generate_pr_metadata(
                     chunk_text=chunk_text,
                 ).strip()
 
-                res = llm.invoke(map_prompt, config=config).content.strip()
+                res = eval_chain.invoke(map_prompt, config=config).content.strip()
                 chunk_summaries.append(res)
 
             synthesized_diff = "\n\n".join(
@@ -1485,7 +1728,9 @@ def _generate_pr_metadata(
             synthesized_diff=syn_diff_str,
         ).strip()
 
-        generated_summary = llm.invoke(summary_prompt, config=config).content.strip().strip("\"'")
+        generated_summary = (
+            eval_chain.invoke(summary_prompt, config=config).content.strip().strip("\"'")
+        )
 
         body_prompt = PromptManager.get(
             "pr_generation",
@@ -1495,7 +1740,7 @@ def _generate_pr_metadata(
             synthesized_diff=syn_diff_str,
         ).strip()
 
-        generated_body = llm.invoke(body_prompt, config=config).content.strip()
+        generated_body = eval_chain.invoke(body_prompt, config=config).content.strip()
     except Exception as e:
         print(f"Error in PR generation map-reduce: {e}")
         generated_summary = "Automated agent modifications"
@@ -1834,13 +2079,12 @@ def update_memory_node(
     thread_id = config.get("configurable", {}).get("thread_id", "default")
 
     try:
-        llm = get_execution_llm(requested_tier=TIER_BASE)
-        if not llm:
+        llms = get_execution_llm_sequence(requested_tier=TIER_BASE)
+        if not llms:
             return {}
+        extractor = _build_fallback_chain(llms, structured_schema=MemoryExtraction)
     except TerminalEscalationError:
         return {}
-
-    extractor = llm.with_structured_output(MemoryExtraction)
 
     # Read the current entity profile from the Store
     namespace = ("user_profile", user_id)

@@ -67,8 +67,8 @@ def test_get_execution_llm_success_parameter_passing(mocker):
 
     get_execution_llm(requested_tier=TIER_BASE, temperature=0.7)
 
-    # verify the temperature and default connection parameters were passed down
-    mock_factory.assert_called_once_with(
+    # verify the temperature and default connection parameters were passed down to base
+    mock_factory.assert_any_call(
         tier_name="base", requested_model_key=None, temperature=0.7, max_retries=0, timeout=120.0
     )
 
@@ -99,15 +99,15 @@ def test_get_execution_llm_fallback_escalate_t1_to_t2(mocker):
     Edge Path: Requests Tier 1, but it returns None.
     Verifies the router cleanly escalates and returns Tier 2.
     """
-    # Simulate Base failing (None), then Standard succeeding
+    # Simulate Base failing (None), Standard succeeding, Frontier failing (None)
     mock_factory = mocker.patch(
-        "src.workspace_agent.orchestrator.router.get_llm", side_effect=[None, "mock_tier_2"]
+        "src.workspace_agent.orchestrator.router.get_llm", side_effect=[None, "mock_tier_2", None]
     )
 
     llm = get_execution_llm(requested_tier=TIER_BASE)
 
     assert llm == "mock_tier_2"
-    assert mock_factory.call_count == 2
+    assert mock_factory.call_count == 3
     mock_factory.assert_has_calls(
         [
             call(
@@ -119,6 +119,13 @@ def test_get_execution_llm_fallback_escalate_t1_to_t2(mocker):
             ),
             call(
                 tier_name="standard",
+                requested_model_key=None,
+                temperature=0.0,
+                max_retries=0,
+                timeout=120.0,
+            ),
+            call(
+                tier_name="frontier",
                 requested_model_key=None,
                 temperature=0.0,
                 max_retries=0,
@@ -208,9 +215,10 @@ def test_get_execution_llm_fallback_escalation_drops_model_key(mocker):
         "src.workspace_agent.orchestrator.router.get_tier_for_model", return_value=TIER_BASE
     )
 
-    # Base fails, so it escalates to standard
+    # Base fails, Standard succeeds, Frontier succeeds
     mock_factory = mocker.patch(
-        "src.workspace_agent.orchestrator.router.get_llm", side_effect=[None, "mock_tier_2"]
+        "src.workspace_agent.orchestrator.router.get_llm",
+        side_effect=[None, "mock_tier_2", "mock_tier_3"],
     )
 
     llm = get_execution_llm(requested_tier=TIER_BASE, requested_model_key="qwen_local")
@@ -229,6 +237,13 @@ def test_get_execution_llm_fallback_escalation_drops_model_key(mocker):
             # otherwise the provider will crash
             call(
                 tier_name="standard",
+                requested_model_key=None,
+                temperature=0.0,
+                max_retries=0,
+                timeout=120.0,
+            ),
+            call(
+                tier_name="frontier",
                 requested_model_key=None,
                 temperature=0.0,
                 max_retries=0,
@@ -253,7 +268,7 @@ def test_get_execution_llm_fallback_invalid_model(mocker):
 
     assert llm == "mock_base_llm"
     # It should drop the invalid key and instantiate the default base tier normally
-    mock_factory.assert_called_once_with(
+    mock_factory.assert_any_call(
         tier_name="base", requested_model_key=None, temperature=0.0, max_retries=0, timeout=120.0
     )
 
@@ -283,7 +298,11 @@ def test_get_intent_router_success_standard_provider(mocker):
     mock_llm = mocker.Mock()
     mock_llm.model_name = "gpt-4o"
 
-    mocker.patch("src.workspace_agent.orchestrator.router.get_execution_llm", return_value=mock_llm)
+    # We now mock the sequence list generator instead of the single execution fetcher
+    mocker.patch(
+        "src.workspace_agent.orchestrator.router.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
     mocker.patch(
         "src.workspace_agent.orchestrator.router.PromptManager.get", return_value="mock prompt"
     )
@@ -302,7 +321,10 @@ def test_get_intent_router_fallback_deepseek_gemini_workaround(mocker):
     mock_llm = mocker.Mock()
     mock_llm.model_name = "gemini-1.5-pro"
 
-    mocker.patch("src.workspace_agent.orchestrator.router.get_execution_llm", return_value=mock_llm)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.router.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
     mocker.patch(
         "src.workspace_agent.orchestrator.router.PromptManager.get", return_value="mock prompt"
     )
@@ -318,7 +340,7 @@ def test_get_intent_router_fallback_deepseek_gemini_workaround(mocker):
 def test_get_intent_router_fallback_terminal_escalation(mocker):
     """Edge Path: Returns None if no LLM providers are available for the requested tier."""
     mocker.patch(
-        "src.workspace_agent.orchestrator.router.get_execution_llm",
+        "src.workspace_agent.orchestrator.router.get_execution_llm_sequence",
         side_effect=TerminalEscalationError("No models available"),
     )
 

@@ -9,14 +9,19 @@
 # ==========================================
 # global orchestration parameters
 agent:
-  # the default branch the agent will sync and branch off from
+  # The default branch the agent will sync and branch off from
   target_branch: "main"
   # List of GitHub usernames authorized to trigger the agent via PRs or ChatOps comments.
   allowed_github_users:
     - "your_github_username"
-  # how many times the agent can retry fixing a tracebacked sandbox execution
+  # How many times the agent can retry fixing a tracebacked sandbox execution
   max_sandbox_retries: 3
-  # appends a footer to Telegram messages showing LLM API call counts
+  # Maximum number of consecutive tool steps (AI + Tool pairs) before triggering the
+  # circuit breaker (60 steps = 30 loops)
+  max_consecutive_tool_steps: 60
+  # Maximum number of Agentic CI test suites permitted to run concurrently across all workspaces
+  max_concurrent_ci_jobs: 1
+  # Appends a footer to Telegram messages showing LLM API call counts
   show_telemetry: true
   # Text prepended to PR titles, PR comments, and commit messages (leave empty for none)
   agent_prefix: "🤖"
@@ -26,22 +31,35 @@ agent:
 # ==========================================
 llm:
   base_tier:
-    default_model: "qwen_local"
+    # Cloud-native default: Use a fast, cheap cloud model for high-volume intent routing.
+    default_model: "gemini_flash"
     available_models:
-      qwen_local:
-        provider: "ollama"
-        model_name: "qwen2.5:32b"
+      gemini_flash:
+        provider: "gemini"
+        model_name: "gemini-2.5-flash"
+
+      # Optional local hosting alternative (uncomment to add as a
+      # selectable model alias via /use:qwen_local):
+      # qwen_local:
+      #   provider: "ollama"
+      #   model_name: "qwen2.5:32b"
 
   standard_tier:
-    default_model: "deepseek_fast"
+    default_model: "deepseek_flash"
     available_models:
-      deepseek_fast:
+      deepseek_flash:
         provider: "deepseek"
-        model_name: "deepseek-chat"
+        model_name: "deepseek-v4-flash"
 
   frontier_tier:
-    default_model: "gemini_pro"
+    default_model: "claude"
     available_models:
+      claude:
+        provider: "anthropic"
+        model_name: "claude-sonnet-4-6"
+      deepseek_pro:
+        provider: "deepseek"
+        model_name: "deepseek-v4-pro"
       gemini_pro:
         provider: "gemini"
         model_name: "gemini-2.5-pro"
