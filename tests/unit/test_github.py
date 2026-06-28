@@ -1,9 +1,11 @@
 import json
+from pathlib import Path
 
 import git
 import pytest
 
 from src.workspace_agent.tools.github import (
+    _get_target_remote,
     cleanup_local_branch,
     comment_on_pull_request,
     create_branch_and_commit,
@@ -739,3 +741,61 @@ def test_cleanup_local_branch_fallback_already_deleted(setup_git_workspace):
 
     # verify repository remains stable
     assert repo.active_branch.name == "main"
+
+
+# ==========================================
+# Workflow: Git Remote Resolution
+# ==========================================
+
+
+def test_get_target_remote_global_default(mocker):
+    """Green Path: Returns the global target_remote when no workspace matches."""
+    mocker.patch("src.workspace_agent.tools.github.settings.agent.target_remote", "origin")
+    mocker.patch("src.workspace_agent.tools.github.settings.workspaces", {})
+
+    mocker.patch(
+        "src.workspace_agent.tools.github.secure_resolve_path", return_value=Path("/tmp/some_repo")
+    )
+    mocker.patch("src.workspace_agent.tools.github.get_allowed_paths", return_value=["/tmp"])
+
+    remote = _get_target_remote("/tmp/some_repo")
+    assert remote == "origin"
+
+
+def test_get_target_remote_workspace_override(mocker):
+    """Green Path: Returns a workspace-specific target_remote override when matched."""
+    mocker.patch("src.workspace_agent.tools.github.settings.agent.target_remote", "origin")
+
+    # Mock a workspace config with a specific remote override
+    mock_ws = mocker.Mock()
+    mock_ws.path = "/Users/username/git/example-project"
+    mock_ws.target_remote = "upstream"
+
+    mocker.patch("src.workspace_agent.tools.github.settings.workspaces", {"example": mock_ws})
+    mocker.patch(
+        "src.workspace_agent.tools.github.secure_resolve_path",
+        # Simulate testing a directory deeply nested inside the workspace
+        return_value=Path("/Users/username/git/example-project/src/nested"),
+    )
+    mocker.patch(
+        "src.workspace_agent.tools.github.get_allowed_paths", return_value=["/Users/username/git"]
+    )
+
+    remote = _get_target_remote("/Users/username/git/example-project/src/nested")
+    assert remote == "upstream"
+
+
+def test_get_target_remote_fallback_on_error(mocker):
+    """Edge Path: Gracefully falls back to the global default if path resolution crashes."""
+    mocker.patch("src.workspace_agent.tools.github.settings.agent.target_remote", "origin")
+
+    # Force the security resolution to crash
+    mocker.patch(
+        "src.workspace_agent.tools.github.get_allowed_paths",
+        side_effect=Exception("Simulated Security Exception"),
+    )
+
+    remote = _get_target_remote("/tmp/restricted_dir")
+
+    # It must trap the exception and safely return the fallback
+    assert remote == "origin"
