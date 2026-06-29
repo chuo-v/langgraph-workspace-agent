@@ -247,15 +247,16 @@ def _build_pytest_command(workspace_root: Path, rel_path: str) -> str:
     if not setup_cmds and (workspace_root / "pyproject.toml").exists():
         setup_cmds.append("uv pip install -v --system .")
 
-    # Quote the path to prevent shell injection via malicious filenames
-    safe_rel_path = shlex.quote(rel_path)
+    # Safely split and quote individual arguments to allow
+    # the LLM to pass valid pytest flags natively
+    safe_args = " ".join(shlex.quote(arg) for arg in shlex.split(rel_path))
 
     # Combine setup commands with the pytest execution
     if setup_cmds:
         chained_setup = " && ".join(setup_cmds)
-        return f"{chained_setup} && pytest {safe_rel_path} -v --tb=short"
+        return f"{chained_setup} && pytest {safe_args} -v --tb=short"
 
-    return f"pytest {safe_rel_path} -v --tb=short"
+    return f"pytest {safe_args} -v --tb=short"
 
 
 def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
