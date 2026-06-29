@@ -8,6 +8,22 @@
 name: langgraph-workspace-agent
 
 services:
+  # Secures the host by restricting the agent to container orchestration (create/delete)
+  # while blocking dangerous volume, swarm, and system-level administrative mutations.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy
+    container_name: docker-socket-proxy
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      POST: 1
+      DELETE: 1
+    restart: unless-stopped
+
   gateway:
     build:
       context: .
@@ -18,6 +34,8 @@ services:
     env_file:
       - .env
     environment:
+      # Point the agent's docker client to the proxy instead of the socket file
+      - DOCKER_HOST=tcp://docker-proxy:2375
       # Override the allowed paths to restrict the agent's filesystem access
       - ALLOWED_PATHS=${HOST_WORKSPACE_DIR}
       # Explicitly set the host's Ollama URL since we are inside a container network
@@ -31,8 +49,6 @@ services:
       # Force uv to use a persistent directory to cache wheel downloads across isolated CI runs
       - UV_CACHE_DIR=/app/.uv_cache
     volumes:
-      # Pass the Docker socket so the Python SDK can spawn ephemeral sibling sandboxes
-      - /var/run/docker.sock:/var/run/docker.sock
       # Symmetrical mount required for Docker-out-of-Docker sandbox spawning
       - ${HOST_WORKSPACE_DIR}:${HOST_WORKSPACE_DIR}
       # Persist the local vector memory across container rebuilds
@@ -50,6 +66,7 @@ services:
       # Enables reaching the host machine (e.g., local Ollama) from inside the container
       - "host.docker.internal:host-gateway"
     depends_on:
+      - docker-proxy
       - redis
       - postgres
     restart: unless-stopped
