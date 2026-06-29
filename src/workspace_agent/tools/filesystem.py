@@ -21,9 +21,19 @@ def secure_resolve_path(requested_path: str | Path, allowed_paths: list[str | Pa
     Raises:
         PermissionError: If the path attempts to traverse outside allowed zones.
     """
+    initial_path = Path(requested_path)
+
+    # Explicitly reject symlinks before path resolution to prevent
+    # arbitrary file read exploits pointing outside the workspace
+    if initial_path.is_symlink():
+        raise PermissionError(
+            "Security Exception: Symlinks are strictly prohibited to "
+            f"prevent path evasion -> {requested_path}"
+        )
+
     # Resolve the requested path to its absolute, canonical form
     # This automatically flattens all `../` attempts and resolves symlinks
-    target_path = Path(requested_path).resolve()
+    target_path = initial_path.resolve()
 
     # Protects against Host-to-Container path evasion and variant secret extensions
     blocked_dirs = {".git", ".secrets", "langgraph-workspace-agent"}

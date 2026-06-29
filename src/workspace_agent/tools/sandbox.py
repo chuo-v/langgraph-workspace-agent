@@ -1,4 +1,5 @@
 import os
+import shlex
 from pathlib import Path
 
 import docker
@@ -246,12 +247,15 @@ def _build_pytest_command(workspace_root: Path, rel_path: str) -> str:
     if not setup_cmds and (workspace_root / "pyproject.toml").exists():
         setup_cmds.append("uv pip install -v --system .")
 
+    # Quote the path to prevent shell injection via malicious filenames
+    safe_rel_path = shlex.quote(rel_path)
+
     # Combine setup commands with the pytest execution
     if setup_cmds:
         chained_setup = " && ".join(setup_cmds)
-        return f"{chained_setup} && pytest {rel_path} -v --tb=short"
+        return f"{chained_setup} && pytest {safe_rel_path} -v --tb=short"
 
-    return f"pytest {rel_path} -v --tb=short"
+    return f"pytest {safe_rel_path} -v --tb=short"
 
 
 def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
