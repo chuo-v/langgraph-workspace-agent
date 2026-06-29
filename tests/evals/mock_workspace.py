@@ -56,7 +56,7 @@ class MockWorkspaceTracker:
             # Seed faulty Python script for eval self-correction test
             calc_path = os.path.join(temp_path, "calculator.py")
             with open(calc_path, "w") as f:
-                f.write("def divide(a, b):\n    return a / b\n\nprint(divide(10, 0))\n")
+                f.write("def divide(a, b):\n    return a / b\n\n\nprint(divide(10, 0))\n")
 
             math_utils_path = os.path.join(temp_path, "math_utils.py")
             with open(math_utils_path, "w") as f:
@@ -65,7 +65,7 @@ class MockWorkspaceTracker:
             test_math_path = os.path.join(temp_path, "test_math.py")
             with open(test_math_path, "w") as f:
                 f.write(
-                    "from math_utils import add\n\ndef test_add():\n    assert add(2, 3) == 5\n"
+                    "from math_utils import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
                 )
 
             repo.git.add(A=True)
@@ -182,8 +182,19 @@ class MockWorkspaceTracker:
             with open(target_path) as f:
                 content = f.read()
 
-            # Check if the bug is still present. We check if they added a return 0 safety.
-            if "a / b" in content and "return 0" not in content:
+            has_raw_division = "a / b" in content
+            has_crashing_call = "divide(10, 0)" in content
+            has_safety_return = "return 0" in content
+            has_try_except = "try:" in content and "except" in content
+
+            # The mock only crashes if the dangerous division is still actively triggered
+            # without safety measures
+            if (
+                has_raw_division
+                and has_crashing_call
+                and not has_safety_return
+                and not has_try_except
+            ):
                 return (
                     "Traceback (most recent call last):\n"
                     '  File "calculator.py", line 4, in <module>\n'

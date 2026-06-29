@@ -861,7 +861,7 @@ def _is_tool_error(tool_name: str, res_str: str) -> bool:
             "=== ERROR",
             "System Error:",
             "Execution Failed",
-            "FAILED (",
+            "FAILED",
         ]
         if res_str.startswith("Error:") or any(sig in res_str for sig in sandbox_signatures):
             return True
