@@ -175,11 +175,16 @@ def test_run_python_script_error_docker_daemon_offline(setup_workspaces, mocker)
 
     # Simulate daemon offline by not loading it into the config dict
     config = {"configurable": {"docker_client": None}}
+    # Force the fallback to fail, simulating a completely unreachable daemon
+    mocker.patch(
+        "src.workspace_agent.tools.sandbox.docker.from_env",
+        side_effect=Exception("Connection refused"),
+    )
 
     result = run_python_script(str(test_file), config=config)
 
     assert "Unexpected Error" in result
-    assert "Docker client not found in injected config." in result
+    assert "Failed to connect to Docker Daemon/Proxy" in result
 
 
 def test_run_python_script_error_file_not_found(setup_workspaces):

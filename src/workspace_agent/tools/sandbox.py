@@ -9,11 +9,21 @@ from src.workspace_agent.tools.filesystem import get_allowed_paths, secure_resol
 
 
 def _get_docker_client(config: RunnableConfig):
-    """Retrieves the injected Docker client from the RunnableConfig."""
+    """
+    Retrieves the Docker client, now routing through the socket proxy
+    for hardened container orchestration.
+    """
+    # Check if a client was explicitly injected (useful for testing)
     client = config.get("configurable", {}).get("docker_client")
-    if not client:
-        raise RuntimeError("Docker client not found in injected config.")
-    return client
+    if client:
+        return client
+
+    # Fallback to initializing the client pointed at the proxy
+    # In docker-compose, this resolves to the proxy container
+    try:
+        return docker.from_env()
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to Docker Daemon/Proxy: {e}") from e
 
 
 def _get_secure_mounts(host_mount_dir: Path) -> tuple[list, dict]:
