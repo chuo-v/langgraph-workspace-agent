@@ -10,7 +10,7 @@ from langgraph.store.memory import InMemoryStore
 
 from src.workspace_agent.core.config import settings
 from src.workspace_agent.core.state import AgentState, PRState
-from src.workspace_agent.orchestrator import nodes
+from src.workspace_agent.orchestrator.nodes import execution, github_lifecycle, routing
 
 # ==========================================
 # Constants
@@ -22,11 +22,11 @@ MIN_ROUTER_CONFIDENCE = 0.85
 # ==========================================
 pr_workflow = StateGraph(PRState)
 
-pr_workflow.add_node("run_pre_commit", nodes.run_pre_commit_node)
-pr_workflow.add_node("evaluate_diff", nodes.evaluate_diff_node)
-pr_workflow.add_node("compile_latex", nodes.compile_node)
-pr_workflow.add_node("review_pr", nodes.review_pr_node)
-pr_workflow.add_node("agentic_ci", nodes.agentic_ci_node)
+pr_workflow.add_node("run_pre_commit", github_lifecycle.run_pre_commit_node)
+pr_workflow.add_node("evaluate_diff", github_lifecycle.evaluate_diff_node)
+pr_workflow.add_node("compile_latex", github_lifecycle.compile_node)
+pr_workflow.add_node("review_pr", github_lifecycle.review_pr_node)
+pr_workflow.add_node("agentic_ci", github_lifecycle.agentic_ci_node)
 
 
 def route_pr_entry(state: PRState) -> str:
@@ -88,17 +88,17 @@ pr_app = pr_workflow.compile()
 workflow = StateGraph(AgentState)
 
 # add all nodes to the graph
-workflow.add_node("parse_intent", nodes.parse_intent_node)
-workflow.add_node("conversational_reply", nodes.conversational_reply_node)
-workflow.add_node("clarify", nodes.clarification_node)
-workflow.add_node("execute_task", nodes.execute_task_node)
-workflow.add_node("workspace_tools", nodes.workspace_tools_node)
-workflow.add_node("update_memory", nodes.update_memory_node)
-workflow.add_node("cleanup_workflow", nodes.cleanup_workflow_node)
-workflow.add_node("human_clarify_node", nodes.human_node)
-workflow.add_node("human_pr_node", nodes.human_node)
-workflow.add_node("pr_merged", nodes.pr_merged_node)
-workflow.add_node("force_tool_retry", nodes.force_tool_retry_node)
+workflow.add_node("parse_intent", routing.parse_intent_node)
+workflow.add_node("conversational_reply", routing.conversational_reply_node)
+workflow.add_node("clarify", routing.clarification_node)
+workflow.add_node("execute_task", execution.execute_task_node)
+workflow.add_node("workspace_tools", execution.workspace_tools_node)
+workflow.add_node("update_memory", execution.update_memory_node)
+workflow.add_node("cleanup_workflow", routing.cleanup_workflow_node)
+workflow.add_node("human_clarify_node", routing.human_node)
+workflow.add_node("human_pr_node", routing.human_node)
+workflow.add_node("pr_merged", github_lifecycle.pr_merged_node)
+workflow.add_node("force_tool_retry", execution.force_tool_retry_node)
 
 
 # Inject the Sub-Graph as a standard functional node
