@@ -1,0 +1,1100 @@
+import subprocess
+
+from langchain_core.messages import AIMessage, HumanMessage
+
+from src.workspace_agent.orchestrator.nodes.github_lifecycle import (
+    _chunk_git_diff,
+    _generate_commit_message,
+    _generate_pr_metadata,
+    _release_preemptive_lock_and_cleanup,
+    agentic_ci_node,
+    compile_node,
+    evaluate_diff_node,
+    pr_merged_node,
+    review_pr_node,
+)
+
+# ==========================================
+# Component: _generate_commit_message
+# ==========================================
+
+
+def test_generate_commit_message_success_semantic(mocker):
+    """Green Path: Successfully generates a semantic commit message from user feedback."""
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "Update toggle settings"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    msg = _generate_commit_message(
+        "Please update the toggle settings to false", "+new code", "M\tfile.py"
+    )
+    assert msg == "🤖 Update toggle settings"
+
+
+def test_generate_commit_message_fallback_api_error(mocker):
+    """Edge Path: Returns the default legacy message if the LLM fails."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        side_effect=Exception("API Outage"),
+    )
+
+    msg = _generate_commit_message(
+        "Please update the toggle settings to false", "+new code", "M\tfile.py"
+    )
+    assert msg == "🤖 Apply human feedback revisions"
+
+
+def test_generate_commit_message_fallback_empty():
+    """Edge Path: Returns default legacy message if no context is provided."""
+    msg = _generate_commit_message("", "", "")
+    assert msg == "🤖 Apply human feedback revisions"
+
+
+# ==========================================
+# Component: _generate_pr_metadata
+# ==========================================
+
+
+def test_generate_pr_metadata_success_map_reduce(mocker):
+    """Green Path: Ensures large diffs trigger the map-reduce summarization pipeline."""
+    # Force the chunk size to be tiny so our small mock string splits into multiple chunks
+    mocker.patch("src.workspace_agent.orchestrator.nodes.github_lifecycle.MAX_DIFF_LENGTH", 40)
+
+    mock_llm = mocker.Mock()
+    # Each map and reduce step will return this generic response
+    mock_llm.invoke.return_value.content = "mocked map-reduce response"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    raw_diff = (
+        "diff --git a/file1.py b/file1.py\n"
+        "+print('hello')\n"
+        "diff --git a/file2.py b/file2.py\n"
+        "+print('world')\n"
+    )
+    blueprint = "M\tfile1.py\nM\tfile2.py"
+
+    branch, body, summary = _generate_pr_metadata("Update files", raw_diff, blueprint)
+
+    # It should process 2 chunks (2 map calls) + 1 summary reduce + 1 body reduce = 4 API calls
+    assert mock_llm.invoke.call_count == 4
+    assert summary == "mocked map-reduce response"
+    assert body == "mocked map-reduce response"
+    # The branch name is derived from the LLM's summary output
+    assert branch.startswith("agent/mocked-mapreduce-response-")
+
+
+def test_generate_pr_metadata_success_single_chunk(mocker):
+    """Green Path: Ensures small diffs bypass the map phase and go straight to reduce."""
+    # Ensure the max length is huge so the diff stays as a single chunk
+    mocker.patch("src.workspace_agent.orchestrator.nodes.github_lifecycle.MAX_DIFF_LENGTH", 40000)
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "mocked generic response"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    raw_diff = "diff --git a/file1.py b/file1.py\n+print('hello')"
+    blueprint = "M\tfile1.py"
+
+    branch, body, summary = _generate_pr_metadata("Update files", raw_diff, blueprint)
+
+    # It should process 0 map calls + 1 summary reduce + 1 body reduce = 2 total API calls
+    assert mock_llm.invoke.call_count == 2
+    assert summary == "mocked generic response"
+    assert branch.startswith("agent/mocked-generic-response-")
+
+
+def test_generate_pr_metadata_fallback_on_error(mocker):
+    """Edge Path: Ensures PR metadata safely falls back to defaults if the LLM API crashes."""
+    # Force the LLM's invoke method to raise an exception (simulating an API timeout)
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.side_effect = Exception("API Outage")
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    branch, body, summary = _generate_pr_metadata("Update files", "raw diff", "M\tfile.py")
+
+    # The agent should catch the error, log it, and return safe generic defaults
+    assert summary == "Automated agent modifications"
+    assert body == "Automated PR generated by the LangGraph Agent."
+    assert branch.startswith("agent/automated-agent-modifications-")
+
+
+# ==========================================
+# Component: _chunk_git_diff
+# ==========================================
+
+
+def test_chunk_git_diff_success_normal():
+    """Green Path: Successfully splits multiple file diffs into chunks without severing logic."""
+    raw_diff = (
+        "diff --git a/file1.py b/file1.py\n"
+        "+print('hello')\n"
+        "diff --git a/file2.py b/file2.py\n"
+        "+print('world')\n"
+    )
+    # set max length small enough to force a split across files
+    chunks = _chunk_git_diff(raw_diff, max_chunk_length=50)
+
+    assert len(chunks) == 2
+    assert "file1.py" in chunks[0]
+    assert "file2.py" in chunks[1]
+
+
+def test_chunk_git_diff_fallback_empty():
+    """Edge Path: Returns an empty list if the diff is empty or signifies no changes."""
+    assert _chunk_git_diff("") == []
+    assert _chunk_git_diff("No uncommitted changes") == []
+    assert _chunk_git_diff("No changes compared to target") == []
+
+
+def test_chunk_git_diff_fallback_mega_file():
+    """Edge Path: Safely truncates the middle of a massive single-file diff."""
+    raw_diff = "diff --git a/mega.py b/mega.py\n" + ("X" * 5000)
+
+    # set max length specifically to test truncation
+    chunks = _chunk_git_diff(raw_diff, max_chunk_length=100)
+
+    assert len(chunks) == 1
+    assert "[single file diff truncated]" in chunks[0]
+    assert len(chunks[0]) <= 150  # half + half + placeholder string
+
+
+# ==========================================
+# Workflow: Evaluation & Reflection Node
+# ==========================================
+
+
+def test_evaluate_diff_node_success_ignores_system_messages(mocker):
+    """
+    Green Path: Ensure evaluate_diff_node extracts the real user request, skipping system errors.
+    """
+    # Replace get_git_diff entirely by mocking _get_evaluation_diffs
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("+new code", "+new code"),
+    )
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "PASS"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "original_instruction": "Original instruction fallback",
+        "messages": [
+            HumanMessage(content="Real user request to fix the bug"),
+            AIMessage(content="Bad code"),
+            HumanMessage(content="SYSTEM REJECTION: The code reviewer rejected your changes."),
+            AIMessage(content="More bad code"),
+            HumanMessage(content="SYSTEM ERROR: API timeout."),
+        ],
+    }
+
+    evaluate_diff_node(state)
+
+    # Extract the actual prompt sent to the critic LLM
+    prompt_sent = mock_llm.invoke.call_args[0][0]
+
+    # The critic should be evaluating the "Real user request", NOT the "SYSTEM REJECTION"
+    assert "Real user request to fix the bug" in prompt_sent
+    assert "SYSTEM REJECTION" not in prompt_sent
+    assert "SYSTEM ERROR" not in prompt_sent
+
+
+def test_evaluate_diff_node_success_pass(mocker):
+    """Green Path: Critic approves the changes."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("+new code", "+new code"),
+    )
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "PASS"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {"workspace_absolute_path": "/tmp/test", "messages": []}
+    result = evaluate_diff_node(state)
+
+    assert result["latest_traceback_error"] is None
+
+
+def test_evaluate_diff_node_fallback_critic_api_crash_handling(mocker):
+    """
+    Edge Path: Asserts that evaluate_diff_node gracefully fails open
+    without crashing the thread if the validation LLM provider goes offline.
+    """
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("+some_code", "+some_code"),
+    )
+
+    # Force the base tier client factory to return an execution engine that crashes
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.side_effect = Exception("Ollama connection refused / out of memory")
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {"workspace_absolute_path": "/tmp/test", "messages": []}
+    result = evaluate_diff_node(state)
+
+    # Confirm it returns a clean state to let the workflow proceed as a fallback
+    assert result == {"latest_traceback_error": None}
+
+
+def test_evaluate_diff_node_fallback_empty_pass(mocker):
+    """Edge Path: Critic approves an empty diff (e.g., file was already correct)."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("", ""),
+    )
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "PASS"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {"workspace_absolute_path": "/tmp/test", "messages": []}
+    result = evaluate_diff_node(state)
+
+    # Must flip the intent to read_only so it safely offramps
+    assert result["latest_traceback_error"] is None
+    assert result["intent_category"] == "workspace_read_only"
+
+
+def test_evaluate_diff_node_fallback_escape_hatch(mocker):
+    """Edge Path: Bypasses the trap if the agent legitimately used the escape hatch."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("", ""),
+    )
+    mock_llm = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence"
+    )
+
+    # Mock the AIMessage with the explicit tool call (Added the required 'id' field)
+    mock_msg = AIMessage(
+        content="",
+        tool_calls=[{"name": "mark_task_already_completed", "args": {}, "id": "call_123"}],
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "intent_category": "workspace_operation",
+        "messages": [mock_msg],
+    }
+
+    result = evaluate_diff_node(state)
+
+    # It should immediately downgrade the intent to read_only and clear errors
+    assert result["intent_category"] == "workspace_read_only"
+    assert result["latest_traceback_error"] is None
+    # The LLM critic should be completely bypassed to save API calls
+    mock_llm.assert_not_called()
+
+
+def test_evaluate_diff_node_fallback_fail_retry(mocker):
+    """Edge Path: Critic rejects the changes, injecting feedback to loop back."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("+wrong code", "+wrong code"),
+    )
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "FAIL: You used the wrong variable name."
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "execution_retry_count": 0,
+        "t1_base_calls": 0,
+        "messages": [],
+    }
+    result = evaluate_diff_node(state)
+
+    assert result["latest_traceback_error"] == "semantic_review_rejection"
+    assert result["execution_retry_count"] == 1
+    assert result["t1_base_calls"] == 1
+    assert "SYSTEM REJECTION" in result["messages"][0].content
+    assert "wrong variable name" in result["messages"][0].content
+
+
+def test_evaluate_diff_node_fallback_git_error(mocker):
+    """Edge Path: If git fails locally, pass it through for review_pr_node to handle."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=(None, None),
+    )
+
+    state = {"workspace_absolute_path": "/tmp/test"}
+    result = evaluate_diff_node(state)
+
+    assert result["latest_traceback_error"] is None
+
+
+def test_evaluate_diff_node_fallback_hallucination_trap_triggered(mocker):
+    """Edge Path: Traps an LLM hallucination when it outputs PASS but the diff is empty."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("", ""),
+    )
+
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value = mocker.Mock(content="PASS")
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    # Agent thinks it did a workspace operation, but no tool calls were used
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "intent_category": "workspace_operation",
+        "messages": [AIMessage(content="I have updated the file.")],
+        "execution_retry_count": 0,
+        "t1_base_calls": 0,
+    }
+
+    result = evaluate_diff_node(state)
+
+    # Verify the trap caught the hallucination and incremented the retry counter
+    assert result["latest_traceback_error"] == "hallucinated_success"
+    assert result["execution_retry_count"] == 1
+    assert "SYSTEM ERROR: No files were modified" in result["messages"][0].content
+
+
+def test_evaluate_diff_node_fallback_revert_trap(mocker):
+    """
+    Edge Path: Verifies that if the cumulative diff is empty (e.g., a revert),
+    but the incremental diff shows the agent's actual uncommitted work, the prompt
+    correctly injects both states so the Critic doesn't falsely fail the agent.
+    """
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("", "+features_enabled: true"),
+    )
+
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "PASS"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {"workspace_absolute_path": "/tmp/test", "messages": []}
+    evaluate_diff_node(state)
+
+    # Extract the actual prompt sent to the critic LLM
+    prompt_sent = mock_llm.invoke.call_args[0][0]
+
+    # Verify both diff contexts are accurately represented to the LLM
+    assert "[NO CUMULATIVE CHANGES TO REPOSITORY]" in prompt_sent
+    assert "+features_enabled: true" in prompt_sent
+
+
+def test_evaluate_diff_node_error_fail_max_retries(mocker):
+    """Red Path: Critic rejects the changes, but max retries have been hit."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("+wrong code", "+wrong code"),
+    )
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "FAIL: Still wrong."
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {"workspace_absolute_path": "/tmp/test", "execution_retry_count": 3, "messages": []}
+    result = evaluate_diff_node(state)
+
+    assert result.get("is_aborted") is True
+    assert result.get("latest_traceback_error") is None
+    assert result.get("execution_retry_count") == 3
+    assert "Execution Failed" in result["messages"][0].content
+    assert "Still wrong" in result["messages"][0].content
+
+
+def test_evaluate_diff_node_error_hallucination_trap_aborted(mocker):
+    """Red Path: Aborts the workflow if the agent hallucinates too many times."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle._get_evaluation_diffs",
+        return_value=("", ""),
+    )
+
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value = mocker.Mock(content="PASS")
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "intent_category": "workspace_operation",
+        "execution_retry_count": 3,  # Max retries hit
+        "messages": [AIMessage(content="I have updated the file.")],
+    }
+
+    result = evaluate_diff_node(state)
+
+    assert result.get("is_aborted") is True
+    assert result.get("latest_traceback_error") is None
+    assert result.get("execution_retry_count") == 3
+    assert "Execution Failed" in result["messages"][0].content
+
+
+# ==========================================
+# Workflow: Agentic CI/CD Execution
+# ==========================================
+
+
+def test_agentic_ci_node_success_all_pass(mocker):
+    """Green Path: Executes multiple suites successfully and reports back to GitHub."""
+    # Disable Redis for unit tests
+    mocker.patch("src.workspace_agent.orchestrator.nodes.github_lifecycle.redis_client", None)
+
+    # Mock workspace config
+    mock_suite_1 = mocker.Mock(name="Unit Tests", command="pytest", timeout_seconds=60)
+    mock_suite_1.name = "Unit Tests"
+
+    mock_suite_2 = mocker.Mock(name="E2E Tests", command="make e2e", timeout_seconds=120)
+    mock_suite_2.name = "E2E Tests"
+
+    mock_workspace = mocker.Mock()
+    mock_workspace.path = "/tmp/test"
+    mock_workspace.ci_suites = [mock_suite_1, mock_suite_2]
+
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.settings.workspaces",
+        {"test_ws": mock_workspace},
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.tempfile.mkdtemp",
+        return_value="/tmp/ci_job_123",
+    )
+    mock_run = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.subprocess.run"
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.subprocess.check_output",
+        return_value=b"sha123\n",
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.os.path.exists", return_value=True
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.github_lifecycle.shutil.rmtree")
+
+    # mock subprocess.Popen for both suites
+    mock_process = mocker.Mock()
+    mock_process.returncode = 0
+    mock_process.communicate.return_value = ("Test Passed", "")
+    mock_popen = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.subprocess.Popen",
+        return_value=mock_process,
+    )
+
+    # mock github API calls
+    mock_set_status = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.set_commit_status"
+    )
+    mock_comment = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.comment_on_pull_request"
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "repo_full_name": "owner/repo",
+        "commit_sha": "sha123",
+        "pr_number": 42,
+    }
+
+    result = agentic_ci_node(state)
+
+    # verify OS processes ran
+    assert mock_popen.call_count == 2
+
+    # verify the setup subprocesses ran (git clone, fetch, checkout, uv venv, uv pip install)
+    assert mock_run.call_count == 5
+
+    # verify github pending & success statuses sent
+    assert mock_set_status.call_count == 4  # 2 pending, 2 success
+
+    # verify consolidated markdown comment sent
+    mock_comment.assert_called_once()
+    comment_body = mock_comment.call_args[1]["body"]
+    assert "✅ Pass" in comment_body
+    assert "Unit Tests" in comment_body
+    assert "E2E Tests" in comment_body
+
+    assert len(result["ci_results"]) == 2
+    assert result["ci_results"][0]["passed"] is True
+
+
+def test_agentic_ci_node_fallback_missing_context():
+    """Edge Path: Ensure node bypasses execution if missing webhook context."""
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "commit_sha": "sha123",
+        "pr_number": None,
+    }
+
+    result = agentic_ci_node(state)
+    assert result == {}
+
+
+def test_agentic_ci_node_error_timeout(mocker):
+    """Red Path: Safely traps OS timeouts and reports them as failures back to the PR."""
+    # Disable Redis for unit tests
+    mocker.patch("src.workspace_agent.orchestrator.nodes.github_lifecycle.redis_client", None)
+    mock_suite = mocker.Mock(name="Slow Test", command="sleep 10", timeout_seconds=1)
+    mock_suite.name = "Slow Test"
+
+    mock_workspace = mocker.Mock()
+    mock_workspace.path = "/tmp/test"
+    mock_workspace.ci_suites = [mock_suite]
+
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.settings.workspaces",
+        {"test_ws": mock_workspace},
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.tempfile.mkdtemp",
+        return_value="/tmp/ci_job_123",
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.github_lifecycle.subprocess.run")
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.subprocess.check_output",
+        return_value=b"sha123\n",
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.os.path.exists", return_value=False
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.github_lifecycle.shutil.rmtree")
+
+    # Raise TimeoutExpired to simulate a hanging execution
+    mock_process = mocker.Mock()
+    mock_process.pid = 12345
+    mock_process.communicate.side_effect = [
+        subprocess.TimeoutExpired(cmd="sleep 10", timeout=1),
+        ("hanging...", ""),
+    ]
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.subprocess.Popen",
+        return_value=mock_process,
+    )
+    mocker.patch("src.workspace_agent.orchestrator.nodes.github_lifecycle.psutil.Process")
+
+    mock_set_status = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.set_commit_status"
+    )
+    mock_comment = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.comment_on_pull_request"
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "repo_full_name": "owner/repo",
+        "commit_sha": "sha123",
+        "pr_number": 42,
+    }
+
+    result = agentic_ci_node(state)
+
+    # Should report pending, then update to failure
+    assert mock_set_status.call_count == 2
+    final_status_call = mock_set_status.call_args_list[1]
+    assert final_status_call[1]["state"] == "failure"
+    assert final_status_call[1]["description"] == "Execution timed out"
+
+    assert result["ci_results"][0]["passed"] is False
+    assert "[ERROR: TimeoutExpired]" in result["ci_results"][0]["logs"]
+
+    mock_comment.assert_called_once()
+    assert "❌ Fail" in mock_comment.call_args[1]["body"]
+
+
+def test_release_preemptive_lock_success_cleans_tmp_dir(mocker):
+    """Green Path: Helper safely garbage collects the ephemeral CI directory."""
+    mock_redis = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.redis_client"
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.os.path.exists", return_value=True
+    )
+    mock_rmtree = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.shutil.rmtree"
+    )
+
+    mock_redis.get.return_value = b"test-run-id"
+
+    _release_preemptive_lock_and_cleanup(
+        target_path="/tmp/test",
+        run_id="test-run-id",
+        tmp_dir="/tmp/ci_job_123",
+    )
+
+    mock_rmtree.assert_called_once_with("/tmp/ci_job_123")
+
+
+def test_release_preemptive_lock_skips_cleanup_if_no_tmp_dir(mocker):
+    """Edge Path: Helper skips garbage collection if tmp_dir is None."""
+    mock_redis = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.redis_client"
+    )
+    mock_rmtree = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.shutil.rmtree"
+    )
+
+    mock_redis.get.return_value = b"test-run-id"
+
+    _release_preemptive_lock_and_cleanup(
+        target_path="/tmp/test",
+        run_id="test-run-id",
+        tmp_dir=None,
+    )
+
+    mock_rmtree.assert_not_called()
+
+
+def test_release_preemptive_lock_error_cleanup_exception_caught(mocker):
+    """
+    Red Path: Ensures OS-level file locks or IO errors during cleanup do not crash the workflow.
+    """
+    mock_redis = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.redis_client"
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.os.path.exists", return_value=True
+    )
+    mock_rmtree = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.shutil.rmtree"
+    )
+
+    mock_redis.get.return_value = b"test-run-id"
+    mock_rmtree.side_effect = Exception("Directory busy")
+
+    # The test runner will fail if the try/except block does not successfully swallow this error
+    _release_preemptive_lock_and_cleanup(
+        target_path="/tmp/test",
+        run_id="test-run-id",
+        tmp_dir="/tmp/ci_job_123",
+    )
+
+    mock_rmtree.assert_called_once()
+
+
+# ==========================================
+# Workflow: Automated Compilation Node
+# ==========================================
+
+
+def test_compile_node_success_standard(mocker):
+    """Green Path: compile_node successfully builds the document and clears the queue."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.execute_tool_call",
+        return_value="Compilation Finished (Exit Code: 0)\n\nLogs...",
+    )
+
+    state = {
+        "modified_tex_files": ["/tmp/doc.tex"],
+        "execution_retry_count": 0,
+    }
+    result = compile_node(state)
+
+    assert result["modified_tex_files"] == []
+    assert result["latest_traceback_error"] is None
+
+
+def test_compile_node_fallback_syntax_error(mocker):
+    """
+    Edge Path: compile_node catches a syntax error and returns a
+    system rejection to force the LLM to self-heal.
+    """
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.execute_tool_call",
+        return_value="Compilation Finished (Exit Code: 1)\n\nRunaway argument?",
+    )
+
+    state = {
+        "modified_tex_files": ["/tmp/broken.tex"],
+        "execution_retry_count": 0,
+    }
+    result = compile_node(state)
+
+    assert "SYSTEM REJECTION" in result["messages"][0].content
+    assert "Runaway argument?" in result["messages"][0].content
+    assert result["latest_traceback_error"] == "latex_compilation_error"
+    assert result["execution_retry_count"] == 1
+
+
+def test_compile_node_error_max_retries(mocker):
+    """
+    Red Path: compile_node aborts the workflow if the LLM cannot fix
+    the LaTeX syntax after the maximum allowed retries.
+    """
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.execute_tool_call",
+        return_value="Compilation Finished (Exit Code: 1)\n\nFatal error",
+    )
+
+    # simulate hitting the max retry limit
+    state = {
+        "modified_tex_files": ["/tmp/broken.tex"],
+        "execution_retry_count": 3,
+    }
+    result = compile_node(state)
+
+    assert result.get("is_aborted") is True
+    assert "Compilation Failed" in result["messages"][0].content
+    assert result["execution_retry_count"] == 4
+
+
+# ==========================================
+# Workflow: PR & Git Review Node
+# ==========================================
+
+
+def test_review_pr_node_success_new_pr(mocker):
+    """
+    Green Path: If the agent has no pending PR, it successfully opens a new one after
+    committing the changes to a newly generated branch.
+    """
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.create_branch_and_commit",
+        return_value='{"status": "success"}',
+    )
+    # mock environment and diff snippets
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.os.getenv",
+        return_value="test_owner",
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_git_diff",
+        return_value="diff snippet",
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_git_diff_blueprint",
+        return_value="A\tnew_file.py",
+    )
+    # mock LLM for PR metadata generation
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "mocked summary"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+    # mock the PR creation tool explicitly
+    mock_open_pr = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.open_pull_request",
+        return_value='{"status": "success", "pr_url": "https://github.com/owner/repo/pull/456"}',
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "original_instruction": "add new feature",
+        "pending_pr_url": None,  # Explicitly None to trigger new PR logic
+    }
+    result = review_pr_node(state)
+
+    # Verify workflow succeeded
+    assert result.get("is_aborted", False) is False
+    assert "Execution Complete" in result["messages"][0].content
+    assert result.get("pending_pr_url") == "https://github.com/owner/repo/pull/456"
+
+    # Verify the PR tool was called with the correct keyword parameters
+    mock_open_pr.assert_called_once()
+    _, kwargs = mock_open_pr.call_args
+    assert kwargs["directory"] == "/tmp/test"
+    # The branch name is dynamically generated using the LLM summary + UUID
+    assert kwargs["head_branch"].startswith("agent/mocked-summary-")
+    assert "mocked summary" in kwargs["title"]
+
+
+def test_review_pr_node_success_refining_existing_pr(mocker):
+    """
+    Green Path: If the agent is refining an existing PR, it should bypass PR generation,
+    push directly to the active branch, and patch the existing PR's title.
+    """
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.create_branch_and_commit",
+        return_value='{"status": "success", "branch": "agent/test-branch"}',
+    )
+
+    # mock the new environment, diff snippet, and PR update dependencies
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.os.getenv",
+        return_value="test_owner",
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_git_diff",
+        return_value="diff snippet",
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_git_diff_blueprint",
+        return_value="M\tREADME.md",
+    )
+    mock_update = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.update_pull_request",
+        return_value='{"status": "success"}',
+    )
+
+    # mock LLM to avoid calling Ollama during unit tests
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "mocked summary"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    # spy on the PR creation tool to ensure it is NEVER called
+    mock_open_pr = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.open_pull_request"
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "active_agent_branch": "agent/test-branch",
+        "pending_pr_url": "https://github.com/owner/repo/pull/123",
+        "original_instruction": "fix the typo",
+        "messages": [HumanMessage(content="actually, do something else")],
+    }
+
+    result = review_pr_node(state)
+
+    # verify workflow succeeded
+    assert result.get("is_aborted", False) is False
+    assert "Revisions Applied" in result["messages"][0].content
+
+    # verify the PR title update status message was injected
+    assert "updated the PR title" in result["messages"][0].content
+
+    # verify it bypassed opening a new PR
+    mock_open_pr.assert_not_called()
+
+    # verify it successfully extracted the PR number and sent the patch request
+    mock_update.assert_called_once()
+    args, kwargs = mock_update.call_args
+    assert kwargs["pr_number"] == 123
+    assert kwargs["directory"] == "/tmp/test"
+
+
+def test_review_pr_node_fallback_diff_extraction_failure(mocker):
+    """Edge Path: review_pr_node proceeds with defaults if git diff extraction fails locally."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.os.getenv",
+        return_value="test_owner",
+    )
+
+    # Force git diff functions to fail (e.g., corrupted local index)
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_git_diff",
+        side_effect=Exception("Git locked"),
+    )
+
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "mocked summary"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.create_branch_and_commit",
+        return_value='{"status": "success", "branch": "agent/test-branch"}',
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.open_pull_request",
+        return_value='{"status": "success", "pr_url": "https://github.com/mock/pr/1"}',
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "original_instruction": "add new feature",
+    }
+
+    result = review_pr_node(state)
+
+    # Verify the workflow did not abort and successfully completed the PR generation
+    assert result.get("is_aborted", False) is False
+    assert result.get("pending_pr_url") == "https://github.com/mock/pr/1"
+
+
+def test_review_pr_node_fallback_self_healing_trap(mocker):
+    """
+    Edge Path: review_pr_node intercepts the `no_changes_to_commit` error,
+    increments the retry counter, and loops back with a SYSTEM REJECTION.
+    """
+    # mock Git execution to return the specific no_changes error
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.create_branch_and_commit",
+        return_value='{"status": "error", "reason": "no_changes_to_commit"}',
+    )
+
+    # mock LLM to avoid calling Ollama during tests
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "mocked summary"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "execution_retry_count": 0,
+    }
+    result = review_pr_node(state)
+
+    # workflow should not abort; it should loop back to the execution node
+    assert result.get("is_aborted", False) is False
+    assert result.get("latest_traceback_error") == "no_changes_to_commit"
+    assert result.get("execution_retry_count") == 1
+
+    # verify the LLM is explicitly scolded
+    assert "SYSTEM REJECTION" in result["messages"][0].content
+    assert "NO CHANGES" in result["messages"][0].content
+
+
+def test_review_pr_node_error_generic_commit_failure(mocker):
+    """Red Path: A generic Git commit failure aborts the workflow safely."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.os.getenv",
+        return_value="test_user",
+    )
+
+    # mock LLM generation metadata
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "mocked summary"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    # simulate a severe git failure that is NOT 'no_changes_to_commit'
+    mock_error_json = (
+        '{"status": "error", "reason": "git_command_failed", "details": "Merge conflict"}'
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.create_branch_and_commit",
+        return_value=mock_error_json,
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "original_instruction": "add new feature",
+    }
+
+    result = review_pr_node(state)
+
+    # verify it aborts instead of looping
+    assert result.get("is_aborted") is True
+    assert "Commit & Push Failed" in result["messages"][0].content
+    assert "Merge conflict" in result["messages"][0].content
+
+
+def test_review_pr_node_error_github_api_rejection(mocker):
+    """
+    Red Path: If pushing the branch succeeds but the GitHub API rejects the PR creation,
+    the workflow must safely abort.
+    """
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.os.getenv",
+        return_value="test_user",
+    )
+
+    # mock LLM generation metadata
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "mocked summary"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.create_branch_and_commit",
+        return_value='{"status": "success", "branch": "agent/new-branch"}',
+    )
+
+    # mock GitHub API returning an error, split across lines to satisfy Ruff E501
+    mock_error_json = (
+        '{"status": "error", "reason": "validation_failed", "details": "Branch protected"}'
+    )
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.open_pull_request",
+        return_value=mock_error_json,
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "original_instruction": "add new feature",
+    }
+
+    result = review_pr_node(state)
+
+    assert result.get("is_aborted") is True
+    assert "PR Creation Failed" in result["messages"][0].content
+    assert "Branch protected" in result["messages"][0].content
+
+
+def test_review_pr_node_error_self_healing_trap_max_retries(mocker):
+    """Red Path: review_pr_node aborts if no_changes_to_commit hits the retry limit."""
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.create_branch_and_commit",
+        return_value='{"status": "error", "reason": "no_changes_to_commit"}',
+    )
+
+    mock_llm = mocker.Mock()
+    mock_llm.invoke.return_value.content = "mocked summary"
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.get_execution_llm_sequence",
+        return_value=[mock_llm],
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "execution_retry_count": 3,
+    }
+    result = review_pr_node(state)
+
+    assert result.get("is_aborted") is True
+    assert "Execution Failed" in result["messages"][0].content
+
+
+def test_pr_merged_node_success_standard(mocker):
+    """Green Path: pr_merged_node successfully cleans up branches and formats response."""
+    mock_cleanup = mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.github_lifecycle.cleanup_local_branch"
+    )
+
+    state = {
+        "workspace_absolute_path": "/tmp/test",
+        "target_branch": "main",
+        "active_agent_branch": "agent/test-branch",
+    }
+    result = pr_merged_node(state)
+
+    assert "Pull Request Merged!" in result["messages"][0].content
+    assert result["active_agent_branch"] is None
+    assert result["human_approved"] is False
+    assert result["pending_pr_url"] is None
+
+    # verify the local cleanup helper was called correctly
+    mock_cleanup.assert_called_once_with("/tmp/test", "main", "agent/test-branch")
