@@ -153,7 +153,7 @@ def test_chunk_git_diff_success_normal():
 def test_chunk_git_diff_fallback_empty():
     """Edge Path: Returns an empty list if the diff is empty or signifies no changes."""
     assert _chunk_git_diff("") == []
-    assert _chunk_git_diff("No uncommitted changes") == []
+    assert _chunk_git_diff("No uncommitted changes.") == []
     assert _chunk_git_diff("No changes compared to target") == []
 
 

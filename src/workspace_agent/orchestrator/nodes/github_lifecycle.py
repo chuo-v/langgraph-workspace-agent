@@ -25,6 +25,7 @@ from src.workspace_agent.tools.github import (
     create_branch_and_commit,
     get_git_diff,
     get_git_diff_blueprint,
+    is_diff_empty,
     open_pull_request,
     set_commit_status,
     update_pull_request,
@@ -176,18 +177,31 @@ def _get_evaluation_diffs(target_path: str, target_branch: str) -> tuple[str | N
     try:
         try:
             # Stage intent-to-add for all untracked files so they appear in git diff
+            # Set check=True and capture_output to force an exception on failure and
+            # read the stderr
             subprocess.run(
-                ["git", "add", "-N", "."], cwd=os.path.expanduser(target_path), check=False
+                ["git", "add", "-N", "."],
+                cwd=os.path.expanduser(target_path),
+                check=True,
+                capture_output=True,
+                text=True,
             )
-        except Exception:
-            pass
+        except subprocess.CalledProcessError as e:
+            print(
+                "[Warning] 'git add -N .' failed in _get_evaluation_diffs.\n"
+                f"Exit Code: {e.returncode}\nError: {e.stderr}"
+            )
+        except Exception as e:
+            print(f"[Error] Unexpected exception during git add: {e}")
 
         # The cumulative diff for the whole PR (against the target branch)
         raw_diff = get_git_diff(directory=target_path, target_branch=target_branch)
         # The incremental diff for the new uncommitted changes (against HEAD)
         incremental_diff = get_git_diff(directory=target_path)
         return raw_diff, incremental_diff
-    except Exception:
+
+    except Exception as e:
+        print(f"[Error] Failed to fetch git diffs in _get_evaluation_diffs: {e}")
         return None, None
 
 
@@ -288,15 +302,8 @@ def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:
         # If git fails locally, pass it through; review_pr_node has fallback handlers
         return {"latest_traceback_error": None}
 
-    # Determine if diffs are effectively empty
-    is_empty_diff = (
-        not raw_diff or "No uncommitted changes" in raw_diff or "No changes compared to" in raw_diff
-    )
-    is_empty_incremental = (
-        not incremental_diff
-        or "No uncommitted changes" in incremental_diff
-        or "No changes compared to" in incremental_diff
-    )
+    is_empty_diff = is_diff_empty(raw_diff)
+    is_empty_incremental = is_diff_empty(incremental_diff)
 
     # Extract the true user request (ignoring our injected SYSTEM REJECTIONS)
     latest_human_msg = next(
@@ -898,7 +905,7 @@ def _generate_pr_metadata(
 
 def _chunk_git_diff(raw_diff: str, max_chunk_length: int = MAX_DIFF_LENGTH) -> list[str]:
     """Splits a raw git diff into manageable chunks safely along file boundaries."""
-    if not raw_diff or "No uncommitted changes" in raw_diff or "No changes compared to" in raw_diff:
+    if is_diff_empty(raw_diff):
         return []
 
     parts = raw_diff.split("diff --git ")

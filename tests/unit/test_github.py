@@ -12,6 +12,7 @@ from src.workspace_agent.tools.github import (
     create_branch_and_commit,
     get_git_diff,
     get_git_diff_blueprint,
+    is_diff_empty,
     open_pull_request,
     set_commit_status,
     sync_repository,
@@ -141,6 +142,45 @@ def test_sync_repository_error_git_command(setup_git_workspace):
     assert result["reason"] == "git_command_failed"
     # the actual git stderr details will mention the branch it failed to match
     assert "non-existent-branch-name" in result["details"]
+
+
+# ==========================================
+# Workflow: Utility Functions
+# ==========================================
+
+
+@pytest.mark.parametrize(
+    "diff_input, expected_result",
+    [
+        # Green Paths: Truly empty scenarios
+        (None, True),
+        ("", True),
+        ("No uncommitted changes.", True),
+        ("No files changed.", True),
+        ("No changes compared to main.", True),
+        ("No changes compared to feature/branch-name", True),
+        # Green Paths: Tolerates messy whitespace
+        (" No uncommitted changes. \n", True),
+        ("\nNo changes compared to develop\n", True),
+        # Red Paths: Legitimate diffs
+        ("diff --git a/README.md b/README.md\n+hello", False),
+        # Edge Paths (The "Inception" Bug):
+        # The artificial fallback string exists, but it's buried INSIDE a valid diff payload.
+        # This MUST evaluate to False so the diff is processed normally.
+        ("diff --git a/script.py b/script.py\n+print('No uncommitted changes.')", False),
+        (
+            "diff --git a/script.py b/script.py\n+if diff == 'No changes compared to main': pass",
+            False,
+        ),
+    ],
+)
+def test_is_diff_empty(diff_input, expected_result):
+    """
+    Validates that empty diffs are correctly identified and ensures
+    the logic is immune to substring traps where the fallback text
+    appears inside the actual modified source code.
+    """
+    assert is_diff_empty(diff_input) == expected_result
 
 
 # ==========================================
