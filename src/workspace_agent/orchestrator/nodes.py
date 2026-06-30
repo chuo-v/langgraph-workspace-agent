@@ -1093,7 +1093,97 @@ def run_pre_commit_node(state: PRState, config: RunnableConfig = None) -> dict:
     return {"latest_traceback_error": None}
 
 
-def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:  # noqa: PLR0911
+def _get_evaluation_diffs(target_path: str, target_branch: str) -> tuple[str | None, str | None]:
+    """Helper to stage intent-to-add files and fetch git diffs."""
+    try:
+        try:
+            # Stage intent-to-add for all untracked files so they appear in git diff
+            subprocess.run(
+                ["git", "add", "-N", "."], cwd=os.path.expanduser(target_path), check=False
+            )
+        except Exception:
+            pass
+
+        # The cumulative diff for the whole PR (against the target branch)
+        raw_diff = get_git_diff(directory=target_path, target_branch=target_branch)
+        # The incremental diff for the new uncommitted changes (against HEAD)
+        incremental_diff = get_git_diff(directory=target_path)
+        return raw_diff, incremental_diff
+    except Exception:
+        return None, None
+
+
+def _handle_evaluation_pass(
+    state: PRState,
+    is_empty_diff: bool,
+    is_empty_incremental: bool,
+    explicit_escape: bool,
+    retry_count: int,
+) -> dict:
+    """Helper to process a successful critic evaluation, trapping LLM hallucinations."""
+    if is_empty_diff and is_empty_incremental:
+        # Trap LLM Tool Hallucinations: If it was supposed to operate on the workspace
+        # but didn't explicitly use the escape hatch, it likely hallucinated task completion.
+        if not explicit_escape and state.get("intent_category") == "workspace_operation":
+            if retry_count < settings.agent.max_sandbox_retries:
+                msg = (
+                    "SYSTEM ERROR: No files were modified. You must use the provided tools "
+                    "(like write_file or search_and_replace) to fulfill the user's request "
+                    "before stating you are finished."
+                )
+                return {
+                    "messages": [HumanMessage(content=msg)],
+                    "latest_traceback_error": "hallucinated_success",
+                    "execution_retry_count": retry_count + 1,
+                    "t1_base_calls": state.get("t1_base_calls", 0) + 1,
+                }
+
+            abort_msg = (
+                "⚠️ **Execution Failed:** I was unable to invoke the necessary tools "
+                f"to satisfy the requirements after {retry_count} attempts.\n\n"
+                "*Workflow safely aborted.*"
+            )
+            return {
+                "messages": [AIMessage(content=abort_msg)],
+                "is_aborted": True,
+                "latest_traceback_error": None,
+                "execution_retry_count": retry_count,
+            }
+
+        # Valid read-only pass
+        return {"latest_traceback_error": None, "intent_category": "workspace_read_only"}
+
+    # Standard pass with valid changes
+    return {"latest_traceback_error": None}
+
+
+def _handle_evaluation_fail(eval_result: str, state: PRState, retry_count: int) -> dict:
+    """Helper to process a failed critic evaluation, triggering a retry loop or aborting."""
+    if retry_count >= settings.agent.max_sandbox_retries:
+        abort_msg = (
+            "⚠️ **Execution Failed:** I was unable to satisfy the requirements after "
+            f"{retry_count} attempts.\n\n"
+            f"*Critic Feedback:* {eval_result}\n\n*Workflow safely aborted.*"
+        )
+        return {
+            "messages": [AIMessage(content=abort_msg)],
+            "is_aborted": True,
+            "latest_traceback_error": None,
+            "execution_retry_count": retry_count,
+        }
+
+    feedback = eval_result.replace("FAIL:", "").strip()
+    msg = PromptManager.get("evaluation", "semantic_rejection", feedback=feedback).strip()
+
+    return {
+        "messages": [HumanMessage(content=msg)],
+        "latest_traceback_error": "semantic_review_rejection",
+        "execution_retry_count": retry_count + 1,
+        "t1_base_calls": state.get("t1_base_calls", 0) + 1,
+    }
+
+
+def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:
     """
     Reflection Node: Uses git diff and an LLM critic to verify the agent actually
     completed the requested task before opening a PR.
@@ -1115,12 +1205,8 @@ def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:  
                 return {"latest_traceback_error": None, "intent_category": "workspace_read_only"}
             break  # Only evaluate the single most recent AI action
 
-    try:
-        # The cumulative diff for the whole PR (against the target branch)
-        raw_diff = get_git_diff(directory=target_path, target_branch=target_branch)
-        # The incremental diff for the new uncommitted changes (against HEAD)
-        incremental_diff = get_git_diff(directory=target_path)
-    except Exception:
+    raw_diff, incremental_diff = _get_evaluation_diffs(target_path, target_branch)
+    if raw_diff is None:
         # If git fails locally, pass it through; review_pr_node has fallback handlers
         return {"latest_traceback_error": None}
 
@@ -1175,65 +1261,11 @@ def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:  
         return {"latest_traceback_error": None}
 
     if eval_result.startswith("PASS"):
-        if is_empty_diff and is_empty_incremental:
-            # Trap LLM Tool Hallucinations: If it was supposed to operate on the workspace
-            # but didn't explicitly use the escape hatch, it likely hallucinated task completion.
-            if not explicit_escape and state.get("intent_category") == "workspace_operation":
-                if retry_count < settings.agent.max_sandbox_retries:
-                    msg = (
-                        "SYSTEM ERROR: No files were modified. You must use the provided tools "
-                        "(like write_file or search_and_replace) to fulfill the user's request "
-                        "before stating you are finished."
-                    )
-                    return {
-                        "messages": [HumanMessage(content=msg)],
-                        "latest_traceback_error": "hallucinated_success",
-                        "execution_retry_count": retry_count + 1,
-                        "t1_base_calls": state.get("t1_base_calls", 0) + 1,
-                    }
-                else:
-                    abort_msg = (
-                        "⚠️ **Execution Failed:** I was unable to invoke the necessary tools "
-                        f"to satisfy the requirements after {retry_count} attempts.\n\n"
-                        "*Workflow safely aborted.*"
-                    )
-                    return {
-                        "messages": [AIMessage(content=abort_msg)],
-                        "is_aborted": True,
-                        "latest_traceback_error": None,
-                        "execution_retry_count": retry_count,
-                    }
+        return _handle_evaluation_pass(
+            state, is_empty_diff, is_empty_incremental, explicit_escape, retry_count
+        )
 
-            # Valid read-only pass
-            return {"latest_traceback_error": None, "intent_category": "workspace_read_only"}
-
-        # Standard pass with valid changes
-        return {"latest_traceback_error": None}
-
-    else:
-        # Semantic FAIL -> Bounce it back to the agent
-        if retry_count >= settings.agent.max_sandbox_retries:
-            abort_msg = (
-                "⚠️ **Execution Failed:** I was unable to satisfy the requirements after "
-                f"{retry_count} attempts.\n\n"
-                f"*Critic Feedback:* {eval_result}\n\n*Workflow safely aborted.*"
-            )
-            return {
-                "messages": [AIMessage(content=abort_msg)],
-                "is_aborted": True,
-                "latest_traceback_error": None,
-                "execution_retry_count": retry_count,
-            }
-
-        feedback = eval_result.replace("FAIL:", "").strip()
-        msg = PromptManager.get("evaluation", "semantic_rejection", feedback=feedback).strip()
-
-        return {
-            "messages": [HumanMessage(content=msg)],
-            "latest_traceback_error": "semantic_review_rejection",
-            "execution_retry_count": retry_count + 1,
-            "t1_base_calls": state.get("t1_base_calls", 0) + 1,
-        }
+    return _handle_evaluation_fail(eval_result, state, retry_count)
 
 
 def force_tool_retry_node(state: AgentState) -> dict:
