@@ -15,6 +15,7 @@ from src.workspace_agent.tools.filesystem import (
     write_file,
 )
 from src.workspace_agent.tools.github import (
+    apply_git_patch,
     comment_on_pull_request,
     get_git_diff,
     set_commit_status,
@@ -43,7 +44,7 @@ def mark_task_already_completed(reason: str) -> str:
     return f"Task marked as successfully completed without changes. Reason: {reason}"
 
 
-# aggregate all capabilities into a LangChain-compatible list
+# Aggregate all capabilities into a LangChain-compatible list
 agent_tools = [
     StructuredTool.from_function(read_files),
     StructuredTool.from_function(write_file),
@@ -61,6 +62,7 @@ agent_tools = [
     StructuredTool.from_function(run_pytest),
     StructuredTool.from_function(get_git_diff),
     StructuredTool.from_function(sync_repository),
+    StructuredTool.from_function(apply_git_patch),
     StructuredTool.from_function(ask_user_for_clarification),
     StructuredTool.from_function(mark_task_already_completed),
     StructuredTool.from_function(comment_on_pull_request),

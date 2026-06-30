@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -499,6 +500,46 @@ def get_git_diff_blueprint(directory: str, target_branch: str = None) -> str:
         return f"Git error: {str(e)}"
     except Exception as e:
         return f"Error retrieving git blueprint: {e}"
+
+
+def apply_git_patch(directory: str, patch_content: str) -> str:
+    """
+    Applies a standard unified diff patch file directly to the workspace.
+    """
+    try:
+        allowed = get_allowed_paths()
+        repo_path = secure_resolve_path(directory, allowed)
+        repo = Repo(repo_path)
+
+        if repo.bare:
+            return "Error: The specified directory is not a valid git repository."
+
+        # Create a temporary file to hold the patch content
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".patch", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write(patch_content)
+            tmp_name = tmp.name
+
+        try:
+            # Perform a dry run first using GitPython to check if it applies cleanly
+            repo.git.apply("--check", tmp_name)
+
+            # If the check passes, apply it for real
+            repo.git.apply(tmp_name)
+            return "Success: Patch applied cleanly."
+        except GitCommandError as e:
+            # GitCommandError captures stdout and stderr from git
+            return f"Error applying patch:\n{str(e)}"
+        finally:
+            os.remove(tmp_name)
+
+    except InvalidGitRepositoryError:
+        return "Error: The specified directory is not a valid git repository."
+    except PermissionError as e:
+        return str(e)
+    except Exception as e:
+        return f"Unexpected error applying patch: {str(e)}"
 
 
 def comment_on_pull_request(

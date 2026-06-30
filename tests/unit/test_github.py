@@ -6,6 +6,7 @@ import pytest
 
 from src.workspace_agent.tools.github import (
     _get_target_remote,
+    apply_git_patch,
     cleanup_local_branch,
     comment_on_pull_request,
     create_branch_and_commit,
@@ -251,6 +252,68 @@ def test_get_git_diff_blueprint_error_not_a_repo(tmp_path, monkeypatch):
     result = get_git_diff_blueprint(str(not_a_repo_dir))
 
     assert "Error: The specified directory is not a valid git repository" in result
+
+
+# ==========================================
+# Workflow: Apply Git Patch
+# ==========================================
+
+
+def test_apply_git_patch_success(setup_git_workspace):
+    """Green Path: Successfully applies a clean, valid unified diff patch."""
+    safe_dir, repo = setup_git_workspace
+    test_file = safe_dir / "README.md"
+
+    # Generate a perfectly valid patch dynamically using Git
+    test_file.write_text("# Patched Repository", encoding="utf-8")
+    patch_content = repo.git.diff()
+
+    # Revert the working tree so the file goes back to "# Initial Repository"
+    repo.git.checkout("--", str(test_file))
+
+    # Apply the patch using the agent tool
+    result = apply_git_patch(str(safe_dir), patch_content)
+
+    assert "Success: Patch applied cleanly." in result
+    assert test_file.read_text(encoding="utf-8") == "# Patched Repository"
+
+
+def test_apply_git_patch_error_malformed_patch(setup_git_workspace):
+    """Red Path: Catches GitCommandError when attempting to apply garbage data."""
+    safe_dir, _ = setup_git_workspace
+
+    # Send plain text instead of a valid unified diff patch
+    result = apply_git_patch(str(safe_dir), "This is definitely not a git patch.")
+
+    assert "Error applying patch:" in result
+    # Git usually complains about unrecognized input
+    assert "unrecognized input" in result.lower() or "error" in result.lower()
+
+
+def test_apply_git_patch_error_not_a_repo(tmp_path, monkeypatch):
+    """Red Path: Gracefully fails if the target directory is not a git repository."""
+    not_a_repo_dir = tmp_path / "empty_dir"
+    not_a_repo_dir.mkdir()
+
+    # Temporarily authorize this directory so the security check passes
+    monkeypatch.setenv("ALLOWED_PATHS", str(not_a_repo_dir))
+
+    result = apply_git_patch(str(not_a_repo_dir), "fake patch content")
+
+    assert "Error: The specified directory is not a valid git repository." in result
+
+
+def test_apply_git_patch_error_security_exception(setup_git_workspace):
+    """Red Path: Ensures path traversal and unauthorized paths are securely blocked."""
+    safe_dir, _ = setup_git_workspace
+
+    # Try to apply a patch to a path explicitly outside the ALLOWED_PATHS safe_dir
+    unauthorized_dir = safe_dir.parent / "secret_folder"
+
+    result = apply_git_patch(str(unauthorized_dir), "fake patch content")
+
+    # The secure_resolve_path function should intercept this and raise a PermissionError
+    assert "Security Exception" in result
 
 
 # ==========================================
