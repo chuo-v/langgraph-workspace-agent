@@ -43,7 +43,7 @@ def test_extract_tier_command_success_frontier_prefix():
 def test_extract_tier_command_success_middle():
     """Green Path: Command buried in the middle with awkward spacing."""
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
-        "in langgraph_workspace_agent_test_arena change the title"
+        "in langgraph_workspace_agent_test_arena  /use:frontier   change the title"
     )
     assert has_frontier is True
     assert has_standard is False
