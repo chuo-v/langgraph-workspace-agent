@@ -98,11 +98,13 @@ def _perform_sync_check(
 ) -> dict | None:
     """Helper to verify and sync the target repository before execution."""
     is_tool_loop = state.get("messages") and state["messages"][-1].type == "tool"
+    is_retry_loop = state.get("execution_retry_count", 0) > 0
+
     active_branch = state.get("active_agent_branch")
     sync_target = active_branch if active_branch else target_branch
 
-    # Only sync if there's a target path and we are not in the middle of a tool loop
-    if target_path and target_path != "None" and not is_tool_loop:
+    # Prevent sync if we are in the middle of a tool loop OR an error recovery loop
+    if target_path and target_path != "None" and not is_tool_loop and not is_retry_loop:
         sync_result = json.loads(sync_repository(directory=target_path, target_branch=sync_target))
         if sync_result.get("status") == "error":
             error_msg = (
