@@ -145,7 +145,7 @@ def _extract_tier_command(instruction: str) -> tuple[str, bool, bool, str | None
         r"(?i)(?:^|\s)/use:(frontier|standard|[a-zA-Z0-9_]+)(?=\s|$)", "", instruction
     ).strip()
 
-    clean_instruction = re.sub(r"\s+", " ", clean_instruction)
+    clean_instruction = re.sub(r"[ \t]+", " ", clean_instruction)
 
     return clean_instruction, has_frontier, has_standard, requested_model
 
