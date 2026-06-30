@@ -100,25 +100,33 @@ class MockWorkspaceTracker:
         self.env_patcher.start()
 
         # 4. Mock only remote / network boundary tools
-        self.patcher_pr = patch("src.workspace_agent.orchestrator.nodes.open_pull_request")
+        self.patcher_pr = patch(
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.open_pull_request"
+        )
         self.mock_pr = self.patcher_pr.start()
         self.mock_pr.side_effect = self._mock_create_pr
 
-        self.patcher_update_pr = patch("src.workspace_agent.orchestrator.nodes.update_pull_request")
+        self.patcher_update_pr = patch(
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.update_pull_request"
+        )
         self.mock_update_pr = self.patcher_update_pr.start()
         self.mock_update_pr.side_effect = self._mock_update_pr
 
         self.patcher_branch = patch(
-            "src.workspace_agent.orchestrator.nodes.create_branch_and_commit"
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.create_branch_and_commit"
         )
         self.mock_branch = self.patcher_branch.start()
         self.mock_branch.side_effect = self._mock_create_branch
 
-        self.patcher_sync = patch("src.workspace_agent.orchestrator.nodes.sync_repository")
+        self.patcher_sync = patch(
+            "src.workspace_agent.orchestrator.nodes.execution.sync_repository"
+        )
         self.mock_sync = self.patcher_sync.start()
         self.mock_sync.side_effect = self._mock_sync
 
-        self.patcher_delete = patch("src.workspace_agent.orchestrator.nodes.cleanup_local_branch")
+        self.patcher_delete = patch(
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.cleanup_local_branch"
+        )
         self.mock_delete = self.patcher_delete.start()
         self.mock_delete.side_effect = self._mock_delete_branch
 
@@ -131,8 +139,14 @@ class MockWorkspaceTracker:
         self.mock_pytest.side_effect = self._mock_run_pytest
 
         # Acts as an inescapable choke point for native tool execution observability
-        self.patcher_exec = patch("src.workspace_agent.orchestrator.nodes.execute_tool_call")
-        self.mock_exec = self.patcher_exec.start()
+        self.patcher_exec_main = patch(
+            "src.workspace_agent.orchestrator.nodes.execution.execute_tool_call"
+        )
+        self.patcher_exec_github = patch(
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.execute_tool_call"
+        )
+        self.mock_exec_main = self.patcher_exec_main.start()
+        self.mock_exec_github = self.patcher_exec_github.start()
 
         def _mock_execute(tool_call, config=None):
             self.invocation_history.append(
@@ -140,7 +154,8 @@ class MockWorkspaceTracker:
             )
             return original_execute_tool_call(tool_call, config)
 
-        self.mock_exec.side_effect = _mock_execute
+        self.mock_exec_main.side_effect = _mock_execute
+        self.mock_exec_github.side_effect = _mock_execute
 
         return self
 
