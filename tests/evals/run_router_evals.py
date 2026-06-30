@@ -21,7 +21,7 @@ from langchain_core.messages import HumanMessage  # noqa: E402
 from langfuse import Langfuse, get_client, propagate_attributes  # noqa: E402
 
 # Directly import just the parsing node, bypassing the full graph and tool execution
-from src.workspace_agent.orchestrator.nodes import parse_intent_node  # noqa: E402
+from src.workspace_agent.orchestrator.nodes.routing import parse_intent_node  # noqa: E402
 
 DATASET_NAME = "workspace_agent_eval_router_nlu"
 DATASET_PATH = os.path.join(CURRENT_DIR, "datasets", "01_router_nlu.json")
