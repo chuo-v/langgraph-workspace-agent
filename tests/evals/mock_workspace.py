@@ -130,28 +130,29 @@ class MockWorkspaceTracker:
         self.mock_delete = self.patcher_delete.start()
         self.mock_delete.side_effect = self._mock_delete_branch
 
-        self.patcher_python = patch("src.workspace_agent.tools.sandbox.run_python_script")
-        self.mock_python = self.patcher_python.start()
-        self.mock_python.side_effect = self._mock_run_python_script
-
-        self.patcher_pytest = patch("src.workspace_agent.tools.sandbox.run_pytest")
-        self.mock_pytest = self.patcher_pytest.start()
-        self.mock_pytest.side_effect = self._mock_run_pytest
-
         # Acts as an inescapable choke point for native tool execution observability
         self.patcher_exec_main = patch(
             "src.workspace_agent.orchestrator.nodes.execution.execute_tool_call"
         )
+        self.mock_exec_main = self.patcher_exec_main.start()
+
         self.patcher_exec_github = patch(
             "src.workspace_agent.orchestrator.nodes.github_lifecycle.execute_tool_call"
         )
-        self.mock_exec_main = self.patcher_exec_main.start()
         self.mock_exec_github = self.patcher_exec_github.start()
 
         def _mock_execute(tool_call, config=None):
-            self.invocation_history.append(
-                {"tool": tool_call.get("name"), "kwargs": tool_call.get("args")}
-            )
+            tool_name = tool_call.get("name")
+            kwargs = tool_call.get("args") or {}
+
+            self.invocation_history.append({"tool": tool_name, "kwargs": kwargs})
+
+            # Intercept Sandbox tools to avoid Docker-in-Docker volume mount failures!
+            if tool_name == "run_pytest":
+                return self._mock_run_pytest(**kwargs)
+            if tool_name == "run_python_script":
+                return self._mock_run_python_script(**kwargs)
+
             return original_execute_tool_call(tool_call, config)
 
         self.mock_exec_main.side_effect = _mock_execute
