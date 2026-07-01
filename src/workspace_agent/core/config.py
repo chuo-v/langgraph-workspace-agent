@@ -49,6 +49,9 @@ class OrchestrationConfig(BaseModel):
     agent_prefix: str = Field(
         default="🤖", description="Text prepended to PR titles, PR comments, and commit messages."
     )
+    chatops_name: str = Field(
+        default="agent", description="The base name the agent listens to for ChatOps mentions."
+    )
 
 
 class CISuiteConfig(BaseModel):
