@@ -117,8 +117,8 @@ def load_configuration() -> WorkspaceAgentConfig:
     Requires a live config.yaml to be present to prevent the daemon from booting
     with invalid dummy paths from the example template.
     """
-    config_path = os.getenv(
-        "WORKSPACE_AGENT_CONFIG_PATH", os.path.join(PROJECT_ROOT, "config.yaml")
+    config_path = os.getenv("WORKSPACE_AGENT_CONFIG_PATH") or os.path.join(
+        PROJECT_ROOT, "config.yaml"
     )
 
     if not os.path.exists(config_path):
