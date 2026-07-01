@@ -261,10 +261,7 @@ def _filter_execution_context(messages: list) -> list:
             ):
                 filtered_messages.append(
                     AIMessage(
-                        content=(
-                            "[System Note: The requested action has been completed "
-                            "and the workflow cycle has concluded.]"
-                        ),
+                        content=PromptManager.get("execution", "workflow_completed_note").strip(),
                         id=m.id,
                     )
                 )
@@ -276,7 +273,9 @@ def _filter_execution_context(messages: list) -> list:
             if not getattr(m, "tool_calls", None) and i != len(messages) - 1:
                 filtered_messages.append(
                     AIMessage(
-                        content="[System Note: Conversational reply acknowledged.]",
+                        content=PromptManager.get(
+                            "execution", "conversational_acknowledged_note"
+                        ).strip(),
                         id=m.id,
                     )
                 )
@@ -537,16 +536,9 @@ def force_tool_retry_node(state: AgentState) -> dict:
     Appends a system message forcing the LLM to emit a tool call
     when it mistakenly replies with plain text during an operation intent.
     """
+    prompt = PromptManager.get("execution", "force_tool_retry").strip()
     return {
-        "messages": [
-            SystemMessage(
-                content=(
-                    "CRITICAL: You are performing a workspace operation but failed "
-                    "to invoke any tools. Do not narrate your intentions. You MUST "
-                    "execute the appropriate tool function now."
-                )
-            )
-        ],
+        "messages": [SystemMessage(content=prompt)],
         "execution_retry_count": state.get("execution_retry_count", 0) + 1,
     }
 
