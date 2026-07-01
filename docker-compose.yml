@@ -46,6 +46,10 @@ services:
       - LANGFUSE_HOST=http://langfuse:3000
       # Direct the agent to write its memory to the isolated state directory
       - AGENT_PROFILE_PATH=/app/state/user_profile.json
+      # Define the internal container path for the dynamic core configuration file
+      - WORKSPACE_AGENT_CONFIG_PATH=/app/config.yaml
+      # Define the internal container path for the top-level orchestrator system prompts
+      - WORKSPACE_AGENT_PROMPTS_PATH=/app/prompts.yaml
       # Force uv to use a persistent directory to cache wheel downloads across isolated CI runs
       - UV_CACHE_DIR=/app/.uv_cache
     volumes:
@@ -57,6 +61,8 @@ services:
       - ${WORKSPACE_AGENT_STATE_DIR:-./agent_state}:/app/state
       # Inject the dynamic routing and workspace configuration file
       - ${WORKSPACE_AGENT_CONFIG_PATH:-./config.yaml}:/app/config.yaml
+      # Inject the prompts file
+      - ${WORKSPACE_AGENT_PROMPTS_PATH:-./prompts.yaml}:/app/prompts.yaml
       # Mount the persistent cache to eliminate cold-start dependency installations in ephemeral /tmp workspaces
       - uv_cache:/app/.uv_cache
     ports:
