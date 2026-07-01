@@ -27,6 +27,8 @@ agent:
   show_telemetry: true
   # Text prepended to PR titles, PR comments, and commit messages (leave empty for none)
   agent_prefix: "🤖"
+  # The base name the agent listens to for ChatOps commands (e.g., @agent retest)
+  chatops_name: "agent"
 
 # ==========================================
 # LLM ROUTING & TIERS
