@@ -98,54 +98,101 @@ def _validate_state(expected_state: dict, actual_state_values: dict) -> int:
                 print(f"      ✅ {key}: (Populated)")
             else:
                 print(f"      ❌ {key}: Expected populated value, got None")
+
+        elif expected_val == "__NOT_EMPTY__":
+            if actual_val:  # Evaluates truthiness (catches empty lists/strings/dicts and None)
+                passed_criteria += 1
+                print(f"      ✅ {key}: (Not Empty)")
+            else:
+                print(f"      ❌ {key}: Expected non-empty value, got {repr(actual_val)}")
+
         elif actual_val == expected_val:
             passed_criteria += 1
             print(f"      ✅ {key}: {actual_val}")
+
         else:
             print(f"      ❌ {key}: Expected {expected_val}, got {actual_val}")
 
     return passed_criteria, total_criteria
 
 
-def _validate_tool_calls(expected_tools: list, tracker, config: dict) -> int:
-    """Helper to validate both mock and native tool calls across the entire graph history."""
+def _extract_called_tools(tracker) -> list[dict]:
+    """Helper to extract chronologically executed tool calls directly from the mock tracker."""
+    return [
+        {"name": call.get("tool"), "args": call.get("kwargs", {})}
+        for call in tracker.invocation_history
+    ]
+
+
+def _args_match(expected_args: dict, actual_args: dict) -> bool:
+    """Helper to evaluate if actual arguments contain the expected subsets."""
+    for k, expected_val in expected_args.items():
+        actual_val = actual_args.get(k)
+
+        if actual_val is None:
+            return False
+
+        # If string, use substring matching (handles absolute paths dynamically)
+        if isinstance(expected_val, str) and isinstance(actual_val, str):
+            if expected_val not in actual_val:
+                return False
+        # Exact match for booleans, ints, etc.
+        elif actual_val != expected_val:
+            return False
+
+    return True
+
+
+def _find_tool_match(expected, called_tools: list[dict], start_idx: int) -> int:
+    """Finds the index of the first matching tool starting from start_idx."""
+    if isinstance(expected, str):
+        for i in range(start_idx, len(called_tools)):
+            if called_tools[i]["name"] == expected:
+                return i
+        return -1
+
+    expected_name = expected.get("name")
+    expected_args = expected.get("args_contain", {})
+
+    for i in range(start_idx, len(called_tools)):
+        ct = called_tools[i]
+        if ct["name"] == expected_name and _args_match(expected_args, ct["args"]):
+            return i
+
+    return -1
+
+
+def _validate_tool_calls(expected_tools: list, tracker) -> int:
+    """Helper to sequentially validate actual executed tool calls for the current turn."""
     if not expected_tools:
         return 0
 
     tools_passed = 0
-    # 1. Get remote/mocked tool calls from the sandbox boundary
-    called_tools = [call["tool"] for call in tracker.invocation_history]
+    called_tools = _extract_called_tools(tracker)
 
-    # 2. Extract native LangChain tool calls from the ENTIRE state history.
-    # This is critical because memory management nodes often prune intermediate
-    # ToolMessages from the active state to save context window space.
-    for snapshot in agent_app.get_state_history(config):
-        for msg in snapshot.values.get("messages", []):
-            # Robust extraction to handle both instantiated BaseMessages and raw serialized dicts
-            is_dict = isinstance(msg, dict)
-            msg_type = msg.get("type") if is_dict else getattr(msg, "type", None)
-            msg_name = msg.get("name") if is_dict else getattr(msg, "name", None)
-            tool_calls = msg.get("tool_calls", []) if is_dict else getattr(msg, "tool_calls", [])
+    # Acts as a pointer. Matches must occur AFTER the previously matched tool.
+    search_idx = 0
 
-            # Check AIMessage tool_calls
-            if tool_calls:
-                for tc in tool_calls:
-                    tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-                    if tc_name and tc_name not in called_tools:
-                        called_tools.append(tc_name)
+    for expected in expected_tools:
+        match_idx = _find_tool_match(expected, called_tools, search_idx)
 
-            # Check ToolMessages directly
-            if msg_type == "tool" and msg_name:
-                if msg_name not in called_tools:
-                    called_tools.append(msg_name)
-
-    # Validate against the aggregated tool list
-    for tool in expected_tools:
-        if tool in called_tools:
+        if match_idx != -1:
             tools_passed += 1
-            print(f"      ✅ Tool execution verified: {tool}")
+            search_idx = match_idx + 1  # Advance the pointer to strictly enforce sequence
+
+            if isinstance(expected, str):
+                print(f"      ✅ Sequence verified: {expected}")
+            else:
+                name = expected.get("name")
+                args = ", ".join(f"{k}='{v}'" for k, v in expected.get("args_contain", {}).items())
+                print(f"      ✅ Sequence verified: {name} ({args})")
+        elif isinstance(expected, str):
+            print(f"      ❌ Missing/Out-of-order tool: {expected}")
         else:
-            print(f"      ❌ Missing expected tool call: {tool}")
+            print(
+                f"      ❌ Missing/Out-of-order tool: {expected.get('name')} "
+                f"with args {expected.get('args_contain')}"
+            )
 
     # Clear mock history after asserting to prepare for the next turn
     tracker.invocation_history.clear()
@@ -275,7 +322,7 @@ def _evaluate_e2e_case(item, lf: Langfuse, session_name: str) -> tuple[int, int]
 
                         # Check if the dataset specifies tools that must have been called this turn
                         expected_tools = turn.get("expected_tool_calls", [])
-                        tools_passed = _validate_tool_calls(expected_tools, tracker, config)
+                        tools_passed = _validate_tool_calls(expected_tools, tracker)
 
                         # Update Scoring Logic
                         turn_score = passed + (1 if interrupt_passed else 0) + tools_passed
