@@ -11,6 +11,7 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableConfig
 
 from src.workspace_agent.core.config import settings
+from src.workspace_agent.core.prompt_manager import PromptManager
 from src.workspace_agent.core.state import AgentState
 from src.workspace_agent.orchestrator.router import (
     TIER_BASE,
@@ -311,14 +312,8 @@ def conversational_reply_node(state: AgentState, config: RunnableConfig = None) 
         }
 
     # Inject a system prompt to guide the conversational response and prevent hallucination
-    system_prompt = SystemMessage(
-        content=(
-            "You are a helpful AI workspace assistant. Respond to the user's conversational "
-            "message concisely. If the user is declining further assistance, saying goodbye, "
-            "or acknowledging completion, respond politely and terminate the interaction. "
-            "Do NOT hallucinate or simulate tool outputs, logs, or test results."
-        )
-    )
+    prompt_content = PromptManager.get("router", "conversational_reply").strip()
+    system_prompt = SystemMessage(content=prompt_content)
 
     # Prepend the system prompt dynamically without permanently saving it to state
     messages_to_send = [system_prompt] + state.get("messages", [])

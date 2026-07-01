@@ -157,11 +157,7 @@ def run_pre_commit_node(state: PRState, config: RunnableConfig = None) -> dict:
             }
 
         # Inject the pre-commit feedback directly into the agent's context
-        msg = (
-            f"SYSTEM ERROR: The pre-commit checks failed. Please review the output below "
-            f"and use your tools to fix the remaining issues before I can open the Pull "
-            f"Request:\n\n```text\n{error_str}\n```"
-        )
+        msg = PromptManager.get("evaluation", "pre_commit_rejection", error_str=error_str).strip()
         return {
             "messages": [HumanMessage(content=msg)],
             "latest_traceback_error": "pre_commit_error",
@@ -218,11 +214,7 @@ def _handle_evaluation_pass(
         # but didn't explicitly use the escape hatch, it likely hallucinated task completion.
         if not explicit_escape and state.get("intent_category") == "workspace_operation":
             if retry_count < settings.agent.max_sandbox_retries:
-                msg = (
-                    "SYSTEM ERROR: No files were modified. You must use the provided tools "
-                    "(like write_file or search_and_replace) to fulfill the user's request "
-                    "before stating you are finished."
-                )
+                msg = PromptManager.get("evaluation", "hallucinated_success_rejection").strip()
                 return {
                     "messages": [HumanMessage(content=msg)],
                     "latest_traceback_error": "hallucinated_success",
