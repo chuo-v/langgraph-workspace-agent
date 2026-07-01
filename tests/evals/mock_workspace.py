@@ -53,21 +53,6 @@ class MockWorkspaceTracker:
                 with open(readme_path, "w") as f:
                     f.write(f"# Ephemeral Sandbox for {ws_name}")
 
-            # Seed faulty Python script for eval self-correction test
-            calc_path = os.path.join(temp_path, "calculator.py")
-            with open(calc_path, "w") as f:
-                f.write("def divide(a, b):\n    return a / b\n\n\nprint(divide(10, 0))\n")
-
-            math_utils_path = os.path.join(temp_path, "math_utils.py")
-            with open(math_utils_path, "w") as f:
-                f.write("def add(a, b):\n    return a - b\n")
-
-            test_math_path = os.path.join(temp_path, "test_math.py")
-            with open(test_math_path, "w") as f:
-                f.write(
-                    "from math_utils import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n"
-                )
-
             repo.git.add(A=True)
             repo.git.commit("-m", "Initial sandbox commit")
 
@@ -129,6 +114,12 @@ class MockWorkspaceTracker:
         )
         self.mock_delete = self.patcher_delete.start()
         self.mock_delete.side_effect = self._mock_delete_branch
+
+        self.patcher_delete_routing = patch(
+            "src.workspace_agent.orchestrator.nodes.routing.cleanup_local_branch"
+        )
+        self.mock_delete_routing = self.patcher_delete_routing.start()
+        self.mock_delete_routing.side_effect = self._mock_delete_branch
 
         # Acts as an inescapable choke point for native tool execution observability
         self.patcher_exec_main = patch(

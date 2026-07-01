@@ -100,6 +100,13 @@
   {
     "case_id": "e2e_sandbox_self_correction",
     "description": "Tests the agent's ability to execute a Python script, catch a traceback, self-correct the code, and successfully re-execute before opening a PR.",
+    "fixtures": [
+      {
+        "source": "e2e_sandbox_self_correction/calculator.py",
+        "target_workspace": "langgraph-workspace-agent-sandbox",
+        "target_path": "calculator.py"
+      }
+    ],
     "turns": [
       {
         "step": 1,
@@ -123,6 +130,18 @@
   {
     "case_id": "e2e_pytest_self_correction",
     "description": "Tests the agent's ability to execute a pytest suite, catch test failures, self-correct the source code, and successfully re-execute the tests before opening a PR.",
+    "fixtures": [
+      {
+        "source": "e2e_pytest_self_correction/math_utils.py",
+        "target_workspace": "langgraph-workspace-agent-sandbox",
+        "target_path": "math_utils.py"
+      },
+      {
+        "source": "e2e_pytest_self_correction/test_math.py",
+        "target_workspace": "langgraph-workspace-agent-sandbox",
+        "target_path": "test_math.py"
+      }
+    ],
     "turns": [
       {
         "step": 1,

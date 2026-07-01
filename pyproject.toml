@@ -89,6 +89,7 @@ indent-style = "space"
 # treat root of repo as a source directory
 pythonpath = ["."]
 testpaths = ["tests"]
+addopts = "--ignore=tests/evals/fixtures"
 filterwarnings = [
     # suppress LangChain's allowed_objects warning
     "ignore:.*The default value of `allowed_objects` will change in a future version.*",
