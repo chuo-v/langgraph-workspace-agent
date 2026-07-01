@@ -1,10 +1,12 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 import uuid
 from datetime import datetime
 
+import git
 from dotenv import load_dotenv
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -275,11 +277,36 @@ def _execute_turn(turn: dict, config: dict, run_config: dict) -> None:
         agent_app.invoke(None, config=run_config)
 
 
+def _load_fixtures(fixtures: list, tracker, current_dir: str) -> None:
+    """Helper to dynamically load and commit file fixtures into the mock workspace."""
+    for fixture in fixtures:
+        source_rel = fixture["source"]
+        target_ws = fixture["target_workspace"]
+        target_rel = fixture["target_path"]
+
+        source_abs = os.path.join(current_dir, "fixtures", source_rel)
+        target_base = tracker.sandbox_paths.get(target_ws)
+
+        if target_base and os.path.exists(source_abs):
+            target_abs = os.path.join(target_base, target_rel)
+            os.makedirs(os.path.dirname(target_abs), exist_ok=True)
+            shutil.copy2(source_abs, target_abs)
+
+            # Stage and commit the fixture so git diffs work properly during testing
+            try:
+                repo = git.Repo(target_base)
+                repo.git.add(A=True)
+                repo.git.commit("-m", f"Agent Eval: Loaded fixture {target_rel}")
+            except Exception as e:
+                print(f"Warning: Failed to commit fixture {target_rel}: {e}")
+
+
 def _evaluate_e2e_case(item, lf: Langfuse, session_name: str) -> tuple[int, int]:
     """Executes a full multi-turn script under a single thread_id and Langfuse Trace."""
     case_data = item.metadata
     case_id = case_data["case_id"]
     turns = case_data["turns"]
+    fixtures = case_data.get("fixtures", [])
 
     print(f"\nEvaluating Case: '{case_id}' ({len(turns)} turns)")
 
@@ -299,6 +326,9 @@ def _evaluate_e2e_case(item, lf: Langfuse, session_name: str) -> tuple[int, int]
             with propagate_attributes(session_id=session_name):
                 # Wrap the entire execution in the mock sandbox
                 with MockWorkspaceTracker() as tracker:
+                    if fixtures:
+                        _load_fixtures(fixtures, tracker, CURRENT_DIR)
+
                     for turn in turns:
                         step_num = turn["step"]
                         input_type = turn["input_type"]
