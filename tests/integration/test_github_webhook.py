@@ -165,27 +165,36 @@ def test_parse_agentic_ci_trigger_success_automatic_synchronize(mocker):
 
 
 def test_parse_agentic_ci_trigger_success_chatops_agent_test(mocker):
-    """Green Path: Validates extraction of ChatOps triggers (@agent test) on PR comments."""
+    """Green Path: Validates extraction of ChatOps triggers (@agent retest) on PR comments."""
     mocker.patch(
         "src.workspace_agent.integrations.github_webhook.settings.agent.allowed_github_users",
         ["test_user"],
     )
+    mocker.patch(
+        "src.workspace_agent.integrations.github_webhook.settings.agent.chatops_name",
+        "agent",
+    )
     payload = {
         "action": "created",
         "issue": {"number": 202, "pull_request": {"url": "..."}},
-        "comment": {"body": "@agent test", "user": {"login": "test_user"}},
+        "comment": {"body": "@agent retest", "user": {"login": "test_user"}},
         "repository": {"full_name": "owner/repo", "name": "repo"},
     }
 
     result = parse_agentic_ci_trigger(payload)
     assert result is not None
+    assert result.get("is_chatops") is True
 
 
 def test_parse_agentic_ci_trigger_success_chatops_retest(mocker):
-    """Green Path: Validates extraction of ChatOps triggers (/retest) on PR comments."""
+    """Green Path: Validates extraction of ChatOps triggers (@agent retest) on PR comments."""
     mocker.patch(
         "src.workspace_agent.integrations.github_webhook.settings.agent.allowed_github_users",
         ["test_user"],
+    )
+    mocker.patch(
+        "src.workspace_agent.integrations.github_webhook.settings.agent.chatops_name",
+        "agent",
     )
     payload = {
         "action": "created",
@@ -193,7 +202,10 @@ def test_parse_agentic_ci_trigger_success_chatops_retest(mocker):
             "number": 201,
             "pull_request": {"url": "https://api.github.com/repos/owner/repo/pulls/201"},
         },
-        "comment": {"body": "I fixed the bug. /retest please.", "user": {"login": "test_user"}},
+        "comment": {
+            "body": "I fixed the bug. @agent retest please.",
+            "user": {"login": "test_user"},
+        },
         "repository": {"full_name": "owner/repo", "name": "repo"},
     }
 
@@ -201,6 +213,7 @@ def test_parse_agentic_ci_trigger_success_chatops_retest(mocker):
 
     assert result is not None
     assert result["pr_number"] == 201
+    assert result.get("is_chatops") is True
 
 
 def test_parse_agentic_ci_trigger_fallback_ignores_non_prs(mocker):

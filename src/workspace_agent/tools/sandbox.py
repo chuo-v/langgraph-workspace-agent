@@ -1,4 +1,5 @@
 import os
+import shlex
 from pathlib import Path
 
 import docker
@@ -9,11 +10,21 @@ from src.workspace_agent.tools.filesystem import get_allowed_paths, secure_resol
 
 
 def _get_docker_client(config: RunnableConfig):
-    """Retrieves the injected Docker client from the RunnableConfig."""
+    """
+    Retrieves the Docker client, now routing through the socket proxy
+    for hardened container orchestration.
+    """
+    # Check if a client was explicitly injected (useful for testing)
     client = config.get("configurable", {}).get("docker_client")
-    if not client:
-        raise RuntimeError("Docker client not found in injected config.")
-    return client
+    if client:
+        return client
+
+    # Fallback to initializing the client pointed at the proxy
+    # In docker-compose, this resolves to the proxy container
+    try:
+        return docker.from_env()
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to Docker Daemon/Proxy: {e}") from e
 
 
 def _get_secure_mounts(host_mount_dir: Path) -> tuple[list, dict]:
@@ -236,12 +247,16 @@ def _build_pytest_command(workspace_root: Path, rel_path: str) -> str:
     if not setup_cmds and (workspace_root / "pyproject.toml").exists():
         setup_cmds.append("uv pip install -v --system .")
 
+    # Safely split and quote individual arguments to allow
+    # the LLM to pass valid pytest flags natively
+    safe_args = " ".join(shlex.quote(arg) for arg in shlex.split(rel_path))
+
     # Combine setup commands with the pytest execution
     if setup_cmds:
         chained_setup = " && ".join(setup_cmds)
-        return f"{chained_setup} && pytest {rel_path} -v --tb=short"
+        return f"{chained_setup} && pytest {safe_args} -v --tb=short"
 
-    return f"pytest {rel_path} -v --tb=short"
+    return f"pytest {safe_args} -v --tb=short"
 
 
 def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
@@ -251,23 +266,42 @@ def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
     """
     try:
         allowed = get_allowed_paths()
-        safe_path = secure_resolve_path(test_file_path, allowed)
+
+        # 1. Extract the file path from potential Pytest flags
+        args = shlex.split(test_file_path)
+        if not args:
+            return "Error: No test path provided."
+
+        base_path_str = args[0]
+
+        # Handle Pytest node IDs (e.g., test_file.py::test_function)
+        node_id_split = base_path_str.split("::")
+        actual_file_path = node_id_split[0]
+        pytest_node_suffix = f"::{node_id_split[1]}" if len(node_id_split) > 1 else ""
+
+        # 2. Safely resolve ONLY the actual file path
+        safe_path = secure_resolve_path(actual_file_path, allowed)
 
         if not safe_path.exists():
             return f"Error: Test path not found at {safe_path}"
 
-        # 1. Resolve workspace boundaries and relative execution paths
+        # 3. Resolve workspace boundaries and relative execution paths
         workspace_root, rel_path = _resolve_workspace_and_path(safe_path)
 
-        # 2. Build the exact bash command chaining pip installs and pytest
-        full_command = _build_pytest_command(workspace_root, rel_path)
+        # 4. Reconstruct the raw execution string (flags and node suffix included)
+        # The _build_pytest_command helper will safely shlex.split and shlex.quote this string.
+        flags_str = " ".join(args[1:])
+        execution_target = f"{rel_path}{pytest_node_suffix} {flags_str}".strip()
+
+        # 5. Build the exact bash command chaining pip installs and pytest
+        full_command = _build_pytest_command(workspace_root, execution_target)
 
         client = _get_docker_client(config)
 
-        # 3. Get our dynamically masked volumes
+        # 6. Get our dynamically masked volumes
         secure_vols, secure_tmpfs = _get_secure_mounts(workspace_root)
 
-        # 4. Spin up the ephemeral container
+        # 7. Spin up the ephemeral container
         container = client.containers.run(
             "agent-sandbox:latest",
             command=["/bin/bash", "-c", full_command],
@@ -301,8 +335,10 @@ def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
         return f"Pytest Execution Finished (Exit Code: {status_code})\n\nTest Logs:\n{logs}"
 
     except docker.errors.APIError as e:
-        return f"Docker API Error: {str(e)}"
+        err_msg = f"Docker API Error: {str(e)}"
     except PermissionError as e:
-        return str(e)
+        err_msg = str(e)
     except Exception as e:
-        return f"Unexpected Error executing pytest: {str(e)}"
+        err_msg = f"Unexpected Error executing pytest: {str(e)}"
+
+    return err_msg

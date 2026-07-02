@@ -58,7 +58,11 @@ def test_workspace_agent_config_success_complete():
     and default values should populate correctly.
     """
     valid_data = {
-        "agent": {"target_branch": "develop", "max_sandbox_retries": 2},
+        "agent": {
+            "target_branch": "develop",
+            "target_remote": "upstream",
+            "max_sandbox_retries": 2,
+        },
         "allowed_paths": ["/Users/username/git/langgraph-workspace-agent"],
         "workspaces": {
             "workspace_agent": {
@@ -79,6 +83,7 @@ def test_workspace_agent_config_success_complete():
     config = WorkspaceAgentConfig(**valid_data)
 
     assert config.agent.target_branch == "develop"
+    assert config.agent.target_remote == "upstream"
     assert config.agent.max_sandbox_retries == 2
     assert len(config.allowed_paths) == 1
     assert "workspace_agent" in config.workspaces
@@ -112,13 +117,15 @@ def test_workspace_agent_config_success_defaults():
 
     config = WorkspaceAgentConfig(**minimal_data)
 
-    # verify the agent block was auto-generated with defaults
+    # Verify the agent block was auto-generated with defaults
     assert config.agent.target_branch == "main"
+    assert config.agent.target_remote == "origin"
     assert config.agent.max_sandbox_retries == 3
     assert config.agent.show_telemetry
 
-    # verify workspace defaults
+    # Verify workspace defaults
     assert config.workspaces["minimal_workspace"].target_branch is None
+    assert config.workspaces["minimal_workspace"].target_remote is None
     # Verify ci_suites falls back to an empty list securely
     assert config.workspaces["minimal_workspace"].ci_suites == []
 

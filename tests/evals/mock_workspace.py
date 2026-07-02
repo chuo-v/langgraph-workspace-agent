@@ -53,21 +53,6 @@ class MockWorkspaceTracker:
                 with open(readme_path, "w") as f:
                     f.write(f"# Ephemeral Sandbox for {ws_name}")
 
-            # Seed faulty Python script for eval self-correction test
-            calc_path = os.path.join(temp_path, "calculator.py")
-            with open(calc_path, "w") as f:
-                f.write("def divide(a, b):\n    return a / b\n\nprint(divide(10, 0))\n")
-
-            math_utils_path = os.path.join(temp_path, "math_utils.py")
-            with open(math_utils_path, "w") as f:
-                f.write("def add(a, b):\n    return a - b\n")
-
-            test_math_path = os.path.join(temp_path, "test_math.py")
-            with open(test_math_path, "w") as f:
-                f.write(
-                    "from math_utils import add\n\ndef test_add():\n    assert add(2, 3) == 5\n"
-                )
-
             repo.git.add(A=True)
             repo.git.commit("-m", "Initial sandbox commit")
 
@@ -100,47 +85,69 @@ class MockWorkspaceTracker:
         self.env_patcher.start()
 
         # 4. Mock only remote / network boundary tools
-        self.patcher_pr = patch("src.workspace_agent.orchestrator.nodes.open_pull_request")
+        self.patcher_pr = patch(
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.open_pull_request"
+        )
         self.mock_pr = self.patcher_pr.start()
         self.mock_pr.side_effect = self._mock_create_pr
 
-        self.patcher_update_pr = patch("src.workspace_agent.orchestrator.nodes.update_pull_request")
+        self.patcher_update_pr = patch(
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.update_pull_request"
+        )
         self.mock_update_pr = self.patcher_update_pr.start()
         self.mock_update_pr.side_effect = self._mock_update_pr
 
         self.patcher_branch = patch(
-            "src.workspace_agent.orchestrator.nodes.create_branch_and_commit"
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.create_branch_and_commit"
         )
         self.mock_branch = self.patcher_branch.start()
         self.mock_branch.side_effect = self._mock_create_branch
 
-        self.patcher_sync = patch("src.workspace_agent.orchestrator.nodes.sync_repository")
+        self.patcher_sync = patch(
+            "src.workspace_agent.orchestrator.nodes.execution.sync_repository"
+        )
         self.mock_sync = self.patcher_sync.start()
         self.mock_sync.side_effect = self._mock_sync
 
-        self.patcher_delete = patch("src.workspace_agent.orchestrator.nodes.cleanup_local_branch")
+        self.patcher_delete = patch(
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.cleanup_local_branch"
+        )
         self.mock_delete = self.patcher_delete.start()
         self.mock_delete.side_effect = self._mock_delete_branch
 
-        self.patcher_python = patch("src.workspace_agent.tools.sandbox.run_python_script")
-        self.mock_python = self.patcher_python.start()
-        self.mock_python.side_effect = self._mock_run_python_script
-
-        self.patcher_pytest = patch("src.workspace_agent.tools.sandbox.run_pytest")
-        self.mock_pytest = self.patcher_pytest.start()
-        self.mock_pytest.side_effect = self._mock_run_pytest
+        self.patcher_delete_routing = patch(
+            "src.workspace_agent.orchestrator.nodes.routing.cleanup_local_branch"
+        )
+        self.mock_delete_routing = self.patcher_delete_routing.start()
+        self.mock_delete_routing.side_effect = self._mock_delete_branch
 
         # Acts as an inescapable choke point for native tool execution observability
-        self.patcher_exec = patch("src.workspace_agent.orchestrator.nodes.execute_tool_call")
-        self.mock_exec = self.patcher_exec.start()
+        self.patcher_exec_main = patch(
+            "src.workspace_agent.orchestrator.nodes.execution.execute_tool_call"
+        )
+        self.mock_exec_main = self.patcher_exec_main.start()
+
+        self.patcher_exec_github = patch(
+            "src.workspace_agent.orchestrator.nodes.github_lifecycle.execute_tool_call"
+        )
+        self.mock_exec_github = self.patcher_exec_github.start()
 
         def _mock_execute(tool_call, config=None):
-            self.invocation_history.append(
-                {"tool": tool_call.get("name"), "kwargs": tool_call.get("args")}
-            )
+            tool_name = tool_call.get("name")
+            kwargs = tool_call.get("args") or {}
+
+            self.invocation_history.append({"tool": tool_name, "kwargs": kwargs})
+
+            # Intercept Sandbox tools to avoid Docker-in-Docker volume mount failures!
+            if tool_name == "run_pytest":
+                return self._mock_run_pytest(**kwargs)
+            if tool_name == "run_python_script":
+                return self._mock_run_python_script(**kwargs)
+
             return original_execute_tool_call(tool_call, config)
 
-        self.mock_exec.side_effect = _mock_execute
+        self.mock_exec_main.side_effect = _mock_execute
+        self.mock_exec_github.side_effect = _mock_execute
 
         return self
 
@@ -182,8 +189,19 @@ class MockWorkspaceTracker:
             with open(target_path) as f:
                 content = f.read()
 
-            # Check if the bug is still present. We check if they added a return 0 safety.
-            if "a / b" in content and "return 0" not in content:
+            has_raw_division = "a / b" in content
+            has_crashing_call = "divide(10, 0)" in content
+            has_safety_return = "return 0" in content
+            has_try_except = "try:" in content and "except" in content
+
+            # The mock only crashes if the dangerous division is still actively triggered
+            # without safety measures
+            if (
+                has_raw_division
+                and has_crashing_call
+                and not has_safety_return
+                and not has_try_except
+            ):
                 return (
                     "Traceback (most recent call last):\n"
                     '  File "calculator.py", line 4, in <module>\n'

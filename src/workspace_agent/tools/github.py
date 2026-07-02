@@ -1,11 +1,14 @@
 import json
 import os
 import re
+import tempfile
+from pathlib import Path
 
 import httpx
 from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError
 
+from src.workspace_agent.core.config import settings
 from src.workspace_agent.tools.filesystem import get_allowed_paths, secure_resolve_path
 
 # ==========================================
@@ -36,13 +39,38 @@ def _get_repo_full_name(directory: str) -> str | None:
         allowed = get_allowed_paths()
         repo_path = secure_resolve_path(directory, allowed)
         repo = Repo(repo_path)
-        current_url = next(repo.remotes.origin.urls)
+
+        remote_name = _get_target_remote(directory)
+        current_url = next(repo.remote(name=remote_name).urls)
+
         match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
         if match:
             return match.group(1)
     except Exception:
         pass
     return None
+
+
+def _get_target_remote(directory: str) -> str:
+    """Helper to determine the target remote for a given directory, checking workspace overrides."""
+    try:
+        allowed = get_allowed_paths()
+        safe_path = secure_resolve_path(directory, allowed)
+
+        longest_match = None
+        matched_remote = None
+
+        for ws_config in settings.workspaces.values():
+            ws_path = Path(ws_config.path).resolve()
+            if safe_path.is_relative_to(ws_path):
+                if not longest_match or len(ws_path.parts) > len(longest_match.parts):
+                    longest_match = ws_path
+                    matched_remote = ws_config.target_remote
+
+        return matched_remote or settings.agent.target_remote
+    except Exception:
+        # Fallback to the global default if path resolution fails
+        return settings.agent.target_remote
 
 
 # ==========================================
@@ -63,15 +91,21 @@ def sync_repository(directory: str, target_branch: str = "main") -> str:
 
         repo = Repo(repo_path)
 
+        remote_name = _get_target_remote(directory)
+
         error_reason = None
         token = os.getenv("GITHUB_TOKEN")
-        current_url = next(repo.remotes.origin.urls)
-        match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
 
-        if not token:
-            error_reason = "missing_github_token"
-        elif not match:
-            error_reason = "invalid_github_url_format"
+        try:
+            current_url = next(repo.remote(name=remote_name).urls)
+            match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
+
+            if not token:
+                error_reason = "missing_github_token"
+            elif not match:
+                error_reason = "invalid_github_url_format"
+        except ValueError:
+            error_reason = f"remote '{remote_name}' not found"
 
         if error_reason:
             return json.dumps({"status": "error", "reason": error_reason})
@@ -95,7 +129,9 @@ def sync_repository(directory: str, target_branch: str = "main") -> str:
             git_bin = repo.git.GIT_PYTHON_GIT_EXECUTABLE
 
             repo.git.checkout(target_branch)
-            repo.git.execute([git_bin] + c_flags + ["pull", "--ff-only", "origin", target_branch])
+            repo.git.execute(
+                [git_bin] + c_flags + ["pull", "--ff-only", remote_name, target_branch]
+            )
 
         return json.dumps({"status": "success", "branch": target_branch})
 
@@ -108,7 +144,7 @@ def sync_repository(directory: str, target_branch: str = "main") -> str:
 
 
 def _perform_git_checkout(
-    repo: Repo, commit_sha: str | None, pr_number: int | None, c_flags: list
+    repo: Repo, commit_sha: str | None, pr_number: int | None, c_flags: list, remote_name: str
 ) -> dict:
     """Helper to isolate the git fetch and checkout branching logic."""
     git_bin = repo.git.GIT_PYTHON_GIT_EXECUTABLE
@@ -120,7 +156,7 @@ def _perform_git_checkout(
         repo.git.execute(
             [git_bin]
             + c_flags
-            + ["fetch", "origin", f"+refs/pull/{pr_number}/head:refs/heads/{temp_branch}"]
+            + ["fetch", remote_name, f"+refs/pull/{pr_number}/head:refs/heads/{temp_branch}"]
         )
 
         target_checkout = commit_sha if commit_sha else temp_branch
@@ -130,7 +166,7 @@ def _perform_git_checkout(
 
     # 2. Fallback to origin fetch for triggers that lack a PR number
     if commit_sha:
-        repo.git.execute([git_bin] + c_flags + ["fetch", "origin"])
+        repo.git.execute([git_bin] + c_flags + ["fetch", remote_name])
         repo.git.checkout(commit_sha)
         return {"status": "success", "commit": commit_sha}
 
@@ -150,15 +186,21 @@ def sync_to_commit(directory: str, commit_sha: str = None, pr_number: int = None
         repo_path = secure_resolve_path(directory, allowed)
         repo = Repo(repo_path)
 
-        token = os.getenv("GITHUB_TOKEN")
-        current_url = next(repo.remotes.origin.urls)
-        match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
+        remote_name = _get_target_remote(directory)
 
         error_reason = None
-        if not token:
-            error_reason = "missing_github_token"
-        elif not match:
-            error_reason = "invalid_github_url_format"
+        token = os.getenv("GITHUB_TOKEN")
+
+        try:
+            current_url = next(repo.remote(name=remote_name).urls)
+            match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
+
+            if not token:
+                error_reason = "missing_github_token"
+            elif not match:
+                error_reason = "invalid_github_url_format"
+        except ValueError:
+            error_reason = f"remote '{remote_name}' not found"
 
         if error_reason:
             return json.dumps({"status": "error", "reason": error_reason})
@@ -182,7 +224,7 @@ def sync_to_commit(directory: str, commit_sha: str = None, pr_number: int = None
                 f"credential.helper={_GIT_CREDENTIAL_HELPER}",
             ]
 
-            res = _perform_git_checkout(repo, commit_sha, pr_number, c_flags)
+            res = _perform_git_checkout(repo, commit_sha, pr_number, c_flags, remote_name)
 
         return json.dumps(res)
 
@@ -206,15 +248,24 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
         repo_path = secure_resolve_path(directory, allowed)
         repo = Repo(repo_path)
 
-        token = os.getenv("GITHUB_TOKEN")
-        if not token:
-            return json.dumps({"status": "error", "reason": "missing_github_token"})
+        remote_name = _get_target_remote(directory)
 
-        # dynamically extract 'owner/repo'
-        current_url = next(repo.remotes.origin.urls)
-        match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
-        if not match:
-            return json.dumps({"status": "error", "reason": "invalid_github_url_format"})
+        error_reason = None
+        token = os.getenv("GITHUB_TOKEN")
+
+        if not token:
+            error_reason = "missing_github_token"
+        else:
+            try:
+                current_url = next(repo.remote(name=remote_name).urls)
+                match = re.search(r"github\.com[:/](.+?)(?:\.git)?$", current_url)
+                if not match:
+                    error_reason = "invalid_github_url_format"
+            except ValueError:
+                error_reason = f"remote '{remote_name}' not found"
+
+        if error_reason:
+            return json.dumps({"status": "error", "reason": error_reason})
 
         original_branch = repo.active_branch.name
 
@@ -252,9 +303,9 @@ def create_branch_and_commit(directory: str, new_branch: str, commit_message: st
             ]
             git_bin = repo.git.GIT_PYTHON_GIT_EXECUTABLE
 
-            origin = repo.remote(name="origin")
+            remote_obj = repo.remote(name=remote_name)
             repo.git.execute(
-                [git_bin] + c_flags + ["push", "--set-upstream", origin.name, new_branch]
+                [git_bin] + c_flags + ["push", "--set-upstream", remote_obj.name, new_branch]
             )
 
         return json.dumps({"status": "success", "branch": new_branch, "message": commit_message})
@@ -449,6 +500,62 @@ def get_git_diff_blueprint(directory: str, target_branch: str = None) -> str:
         return f"Git error: {str(e)}"
     except Exception as e:
         return f"Error retrieving git blueprint: {e}"
+
+
+def is_diff_empty(diff_str: str | None) -> bool:
+    """
+    Determines if a git diff or blueprint string represents an empty diff,
+    matching the specific artificial fallback strings generated by the git tools.
+    """
+    if not diff_str:
+        return True
+
+    clean_diff = diff_str.strip()
+    return (
+        clean_diff == "No uncommitted changes."
+        or clean_diff.startswith("No changes compared to")
+        or clean_diff == "No files changed."
+    )
+
+
+def apply_git_patch(directory: str, patch_content: str) -> str:
+    """
+    Applies a standard unified diff patch file directly to the workspace.
+    """
+    try:
+        allowed = get_allowed_paths()
+        repo_path = secure_resolve_path(directory, allowed)
+        repo = Repo(repo_path)
+
+        if repo.bare:
+            return "Error: The specified directory is not a valid git repository."
+
+        # Create a temporary file to hold the patch content
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".patch", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write(patch_content)
+            tmp_name = tmp.name
+
+        try:
+            # Perform a dry run first using GitPython to check if it applies cleanly
+            repo.git.apply("--check", tmp_name)
+
+            # If the check passes, apply it for real
+            repo.git.apply(tmp_name)
+            return "Success: Patch applied cleanly."
+        except GitCommandError as e:
+            # GitCommandError captures stdout and stderr from git
+            return f"Error applying patch:\n{str(e)}"
+        finally:
+            os.remove(tmp_name)
+
+    except InvalidGitRepositoryError:
+        return "Error: The specified directory is not a valid git repository."
+    except PermissionError as e:
+        return str(e)
+    except Exception as e:
+        return f"Unexpected error applying patch: {str(e)}"
 
 
 def comment_on_pull_request(

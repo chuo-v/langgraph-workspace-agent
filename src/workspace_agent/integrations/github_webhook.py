@@ -57,48 +57,74 @@ def parse_agentic_ci_trigger(payload: dict) -> dict | None:
     Returns a dictionary of PR metadata if triggered, otherwise None.
     """
     allowed_users = settings.agent.allowed_github_users
+    chatops_name = settings.agent.chatops_name
 
-    if not allowed_users:
-        logger.error("Security: 'allowed_github_users' is empty in config.yaml. Rejecting webhook.")
+    # 1. Base Security Guards
+    if not allowed_users or not chatops_name:
+        if not allowed_users:
+            logger.error(
+                "Security: 'allowed_github_users' is empty in config.yaml. Rejecting webhook."
+            )
+        if not chatops_name:
+            logger.error("Security: 'chatops_name' is empty in config.yaml. Rejecting webhook.")
         return None
 
-    # 1. Automatic Triggers (PR Opened or Synchronize)
+    base_name = chatops_name.lower()
+    repo_info = payload.get("repository", {})
+    repo_full_name = repo_info.get("full_name")
+    repo_name = repo_info.get("name")
+
+    # 2. Automatic Triggers (PR Opened or Synchronize)
     is_pr_action = "pull_request" in payload and payload.get("action") in ["opened", "synchronize"]
+
     if is_pr_action:
         pr = payload["pull_request"]
         pr_author = pr.get("user", {}).get("login")
 
         if pr_author in allowed_users:
             return {
-                "repo_full_name": payload.get("repository", {}).get("full_name"),
+                "repo_full_name": repo_full_name,
+                "repo_name": repo_name,
                 "pr_number": pr.get("number"),
                 "commit_sha": pr.get("head", {}).get("sha"),
                 "target_branch": pr.get("base", {}).get("ref"),
-                "repo_name": payload.get("repository", {}).get("name"),
             }
+
         logger.warning(f"Security: Ignored CI trigger from unauthorized PR author: {pr_author}")
 
-    # 2. ChatOps Triggers (Manual comments on PRs)
-    is_comment_action = (
-        "issue" in payload and "comment" in payload and payload.get("action") == "created"
-    )
-    if is_comment_action and "pull_request" in payload["issue"]:
+    # 3. ChatOps Triggers (Manual comments on PRs)
+    elif (
+        "issue" in payload
+        and "comment" in payload
+        and payload.get("action") == "created"
+        and "pull_request" in payload["issue"]
+    ):
         comment_author = payload["comment"].get("user", {}).get("login")
 
-        if comment_author in allowed_users:
-            comment_body = payload["comment"].get("body", "").lower()
-            trigger_pattern = r"(^|\s)(/?retest|@agent test)($|\s)"
-
-            if re.search(trigger_pattern, comment_body):
-                return {
-                    "repo_full_name": payload.get("repository", {}).get("full_name"),
-                    "pr_number": payload["issue"].get("number"),
-                    "repo_name": payload.get("repository", {}).get("name"),
-                    "is_chatops": True,
-                }
-        else:
+        # Reject unauthorized users immediately
+        if comment_author not in allowed_users:
             logger.warning(
                 f"Security: Ignored ChatOps command from unauthorized user: {comment_author}"
             )
+            return None
+
+        comment_body = payload["comment"].get("body", "").lower()
+        github_username = os.getenv("GITHUB_USERNAME", "").lower()
+
+        # Build trigger targets dynamically
+        target_tags = [f"@{base_name}"]
+        if github_username:
+            target_tags.append(f"@{base_name}-{github_username}")
+
+        tag_pattern = "|".join(target_tags)
+        trigger_pattern = rf"(^|\s)({tag_pattern})\s+/?retest($|\s)"
+
+        if re.search(trigger_pattern, comment_body):
+            return {
+                "repo_full_name": repo_full_name,
+                "repo_name": repo_name,
+                "pr_number": payload["issue"].get("number"),
+                "is_chatops": True,
+            }
 
     return None

@@ -1,14 +1,18 @@
 import json
+from pathlib import Path
 
 import git
 import pytest
 
 from src.workspace_agent.tools.github import (
+    _get_target_remote,
+    apply_git_patch,
     cleanup_local_branch,
     comment_on_pull_request,
     create_branch_and_commit,
     get_git_diff,
     get_git_diff_blueprint,
+    is_diff_empty,
     open_pull_request,
     set_commit_status,
     sync_repository,
@@ -141,6 +145,45 @@ def test_sync_repository_error_git_command(setup_git_workspace):
 
 
 # ==========================================
+# Workflow: Utility Functions
+# ==========================================
+
+
+@pytest.mark.parametrize(
+    "diff_input, expected_result",
+    [
+        # Green Paths: Truly empty scenarios
+        (None, True),
+        ("", True),
+        ("No uncommitted changes.", True),
+        ("No files changed.", True),
+        ("No changes compared to main.", True),
+        ("No changes compared to feature/branch-name", True),
+        # Green Paths: Tolerates messy whitespace
+        (" No uncommitted changes. \n", True),
+        ("\nNo changes compared to develop\n", True),
+        # Red Paths: Legitimate diffs
+        ("diff --git a/README.md b/README.md\n+hello", False),
+        # Edge Paths (The "Inception" Bug):
+        # The artificial fallback string exists, but it's buried INSIDE a valid diff payload.
+        # This MUST evaluate to False so the diff is processed normally.
+        ("diff --git a/script.py b/script.py\n+print('No uncommitted changes.')", False),
+        (
+            "diff --git a/script.py b/script.py\n+if diff == 'No changes compared to main': pass",
+            False,
+        ),
+    ],
+)
+def test_is_diff_empty(diff_input, expected_result):
+    """
+    Validates that empty diffs are correctly identified and ensures
+    the logic is immune to substring traps where the fallback text
+    appears inside the actual modified source code.
+    """
+    assert is_diff_empty(diff_input) == expected_result
+
+
+# ==========================================
 # Workflow: Repository State & Diff Operations
 # ==========================================
 
@@ -249,6 +292,68 @@ def test_get_git_diff_blueprint_error_not_a_repo(tmp_path, monkeypatch):
     result = get_git_diff_blueprint(str(not_a_repo_dir))
 
     assert "Error: The specified directory is not a valid git repository" in result
+
+
+# ==========================================
+# Workflow: Apply Git Patch
+# ==========================================
+
+
+def test_apply_git_patch_success(setup_git_workspace):
+    """Green Path: Successfully applies a clean, valid unified diff patch."""
+    safe_dir, repo = setup_git_workspace
+    test_file = safe_dir / "README.md"
+
+    # Generate a perfectly valid patch dynamically using Git
+    test_file.write_text("# Patched Repository", encoding="utf-8")
+    patch_content = repo.git.diff()
+
+    # Revert the working tree so the file goes back to "# Initial Repository"
+    repo.git.checkout("--", str(test_file))
+
+    # Apply the patch using the agent tool
+    result = apply_git_patch(str(safe_dir), patch_content)
+
+    assert "Success: Patch applied cleanly." in result
+    assert test_file.read_text(encoding="utf-8") == "# Patched Repository"
+
+
+def test_apply_git_patch_error_malformed_patch(setup_git_workspace):
+    """Red Path: Catches GitCommandError when attempting to apply garbage data."""
+    safe_dir, _ = setup_git_workspace
+
+    # Send plain text instead of a valid unified diff patch
+    result = apply_git_patch(str(safe_dir), "This is definitely not a git patch.")
+
+    assert "Error applying patch:" in result
+    # Git usually complains about unrecognized input
+    assert "unrecognized input" in result.lower() or "error" in result.lower()
+
+
+def test_apply_git_patch_error_not_a_repo(tmp_path, monkeypatch):
+    """Red Path: Gracefully fails if the target directory is not a git repository."""
+    not_a_repo_dir = tmp_path / "empty_dir"
+    not_a_repo_dir.mkdir()
+
+    # Temporarily authorize this directory so the security check passes
+    monkeypatch.setenv("ALLOWED_PATHS", str(not_a_repo_dir))
+
+    result = apply_git_patch(str(not_a_repo_dir), "fake patch content")
+
+    assert "Error: The specified directory is not a valid git repository." in result
+
+
+def test_apply_git_patch_error_security_exception(setup_git_workspace):
+    """Red Path: Ensures path traversal and unauthorized paths are securely blocked."""
+    safe_dir, _ = setup_git_workspace
+
+    # Try to apply a patch to a path explicitly outside the ALLOWED_PATHS safe_dir
+    unauthorized_dir = safe_dir.parent / "secret_folder"
+
+    result = apply_git_patch(str(unauthorized_dir), "fake patch content")
+
+    # The secure_resolve_path function should intercept this and raise a PermissionError
+    assert "Security Exception" in result
 
 
 # ==========================================
@@ -739,3 +844,61 @@ def test_cleanup_local_branch_fallback_already_deleted(setup_git_workspace):
 
     # verify repository remains stable
     assert repo.active_branch.name == "main"
+
+
+# ==========================================
+# Workflow: Git Remote Resolution
+# ==========================================
+
+
+def test_get_target_remote_global_default(mocker):
+    """Green Path: Returns the global target_remote when no workspace matches."""
+    mocker.patch("src.workspace_agent.tools.github.settings.agent.target_remote", "origin")
+    mocker.patch("src.workspace_agent.tools.github.settings.workspaces", {})
+
+    mocker.patch(
+        "src.workspace_agent.tools.github.secure_resolve_path", return_value=Path("/tmp/some_repo")
+    )
+    mocker.patch("src.workspace_agent.tools.github.get_allowed_paths", return_value=["/tmp"])
+
+    remote = _get_target_remote("/tmp/some_repo")
+    assert remote == "origin"
+
+
+def test_get_target_remote_workspace_override(mocker):
+    """Green Path: Returns a workspace-specific target_remote override when matched."""
+    mocker.patch("src.workspace_agent.tools.github.settings.agent.target_remote", "origin")
+
+    # Mock a workspace config with a specific remote override
+    mock_ws = mocker.Mock()
+    mock_ws.path = "/Users/username/git/example-project"
+    mock_ws.target_remote = "upstream"
+
+    mocker.patch("src.workspace_agent.tools.github.settings.workspaces", {"example": mock_ws})
+    mocker.patch(
+        "src.workspace_agent.tools.github.secure_resolve_path",
+        # Simulate testing a directory deeply nested inside the workspace
+        return_value=Path("/Users/username/git/example-project/src/nested"),
+    )
+    mocker.patch(
+        "src.workspace_agent.tools.github.get_allowed_paths", return_value=["/Users/username/git"]
+    )
+
+    remote = _get_target_remote("/Users/username/git/example-project/src/nested")
+    assert remote == "upstream"
+
+
+def test_get_target_remote_fallback_on_error(mocker):
+    """Edge Path: Gracefully falls back to the global default if path resolution crashes."""
+    mocker.patch("src.workspace_agent.tools.github.settings.agent.target_remote", "origin")
+
+    # Force the security resolution to crash
+    mocker.patch(
+        "src.workspace_agent.tools.github.get_allowed_paths",
+        side_effect=Exception("Simulated Security Exception"),
+    )
+
+    remote = _get_target_remote("/tmp/restricted_dir")
+
+    # It must trap the exception and safely return the fallback
+    assert remote == "origin"
