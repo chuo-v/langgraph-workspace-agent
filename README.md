@@ -68,8 +68,9 @@ To successfully run this agent, your environment must meet the following baselin
 
 Ready to get the daemon running? Head over to the documentation for step-by-step setup instructions, configuration details, and architecture deep-dives:
 
-* **[01. Deployment Guide](docs/01_deployment_guide.md):** Step-by-step instructions for installing dependencies, cloning the repository, configuring API keys, and spinning up the Docker Compose stack.
-* **[02. Configuration](docs/02_configuration.md):** How to tailor the agent to your repositories, whitelist paths, and adjust the triage router thresholds.
-* **[03. Architecture Deep Dive](docs/03_architecture_deep_dive.md):** A technical breakdown of the LangGraph state machine, the dual-layer memory system, and the Docker-out-of-Docker sandbox.
-* **[04. Usage and Workflows](docs/04_usage_and_workflows.md):** A user manual for interacting with the agent via Telegram, using the unified `/use:` flags, and understanding the PR lifecycle.
-* **[05. Development and Evaluation](docs/05_development_and_evaluation.md):** Instructions for running the local test suite, setting up the dev environment, and running the router evaluation pipelines.
+* **[01. Quick Reference & FAQ](docs/01_quick_reference_and_faq.md):** A glanceable guide covering common conversational scenarios, tier overrides, and troubleshooting steps.
+* **[02. Deployment Guide](docs/02_deployment_guide.md):** Step-by-step instructions for installing dependencies, cloning the repository, configuring API keys, and spinning up the Docker Compose stack.
+* **[03. Configuration](docs/03_configuration.md):** How to tailor the agent to your repositories, whitelist paths, and adjust the triage router thresholds.
+* **[04. Architecture Deep Dive](docs/04_architecture_deep_dive.md):** A technical breakdown of the LangGraph state machine, the dual-layer memory system, and the Docker-out-of-Docker sandbox.
+* **[05. Usage and Workflows](docs/05_usage_and_workflows.md):** A user manual for interacting with the agent via Telegram, using the unified `/use:` flags, and understanding the PR lifecycle.
+* **[06. Development and Evaluation](docs/06_development_and_evaluation.md):** Instructions for running the local test suite, setting up the dev environment, and running the router evaluation pipelines.
