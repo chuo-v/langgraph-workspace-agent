@@ -31,50 +31,42 @@ from src.workspace_agent.orchestrator.router import (
 
 def test_resolve_execution_tier_success_priorities(mocker):
     """Green Path: Verifies that tier overrides are correctly prioritized."""
+    # 1. Setup Mock Environment
+    mock_tier = mocker.patch("src.workspace_agent.orchestrator.nodes.execution.get_tier_for_model")
 
-    # 1. Test Explicit Model Override (Highest Priority)
-    mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.execution.get_tier_for_model",
-        return_value=TIER_STANDARD,
-    )
-    assert (
-        _resolve_execution_tier(
-            {
-                "requested_model": "deepseek_fast",
-                "force_frontier_tier": True,  # Explicit model should beat the frontier flag
-            }
-        )
-        == TIER_STANDARD
+    # 2. Execute
+    # Test Explicit Model Override (Highest Priority)
+    mock_tier.return_value = TIER_STANDARD
+    result_explicit = _resolve_execution_tier(
+        {
+            "requested_model": "deepseek_fast",
+            "force_frontier_tier": True,  # Explicit model should beat the frontier flag
+        }
     )
 
     # Reset mock for default flag checks
-    mocker.patch(
-        "src.workspace_agent.orchestrator.nodes.execution.get_tier_for_model", return_value=None
+    mock_tier.return_value = None
+
+    # Test Frontier Override
+    result_frontier = _resolve_execution_tier(
+        {"requested_model": None, "force_frontier_tier": True, "force_standard_tier": False}
     )
 
-    # 2. Test Frontier Override
-    assert (
-        _resolve_execution_tier(
-            {"requested_model": None, "force_frontier_tier": True, "force_standard_tier": False}
-        )
-        == TIER_FRONTIER
+    # Test Standard Override
+    result_standard = _resolve_execution_tier(
+        {"requested_model": None, "force_frontier_tier": False, "force_standard_tier": True}
     )
 
-    # 3. Test Standard Override
-    assert (
-        _resolve_execution_tier(
-            {"requested_model": None, "force_frontier_tier": False, "force_standard_tier": True}
-        )
-        == TIER_STANDARD
+    # Test Conflict (Frontier must win)
+    result_conflict = _resolve_execution_tier(
+        {"requested_model": None, "force_frontier_tier": True, "force_standard_tier": True}
     )
 
-    # 4. Test Conflict (Frontier must win)
-    assert (
-        _resolve_execution_tier(
-            {"requested_model": None, "force_frontier_tier": True, "force_standard_tier": True}
-        )
-        == TIER_FRONTIER
-    )
+    # 3. Assertions
+    assert result_explicit == TIER_STANDARD
+    assert result_frontier == TIER_FRONTIER
+    assert result_standard == TIER_STANDARD
+    assert result_conflict == TIER_FRONTIER
 
 
 # ==========================================
@@ -84,9 +76,13 @@ def test_resolve_execution_tier_success_priorities(mocker):
 
 def test_build_cross_workspace_prompt_success_operation():
     """Green Path: Verifies that standard operations receive the strict write constraint."""
+    # 1. Setup Mock Environment
     state = {"intent_category": "workspace_operation"}
+
+    # 2. Execute
     prompt_msg = _build_cross_workspace_prompt(state, "test_arena", "/tmp/path")
 
+    # 3. Assertions
     # Should not have the read-only flag
     assert "TASK TYPE: READ ONLY" not in prompt_msg.content
 
@@ -97,9 +93,13 @@ def test_build_cross_workspace_prompt_success_operation():
 
 def test_build_cross_workspace_prompt_success_read_only():
     """Green Path: Verifies that the read-only constraint is forcefully appended."""
+    # 1. Setup Mock Environment
     state = {"intent_category": "workspace_read_only"}
+
+    # 2. Execute
     prompt_msg = _build_cross_workspace_prompt(state, "test_arena", "/tmp/path")
 
+    # 3. Assertions
     assert "TASK TYPE: READ ONLY" in prompt_msg.content
     assert "Do NOT attempt to write files" in prompt_msg.content
 
@@ -111,28 +111,43 @@ def test_build_cross_workspace_prompt_success_read_only():
 
 def test_sanitize_llm_response_success_empty_string():
     """Green Path: Preserves empty string content without injecting hallucination risks."""
+    # 1. Setup Mock Environment
     msg = AIMessage(content="", tool_calls=[{"name": "test", "args": {}, "id": "call_123"}])
+
+    # 2. Execute
     _sanitize_llm_response(msg)
+
+    # 3. Assertions
     assert msg.content == ""
 
 
 def test_sanitize_llm_response_success_list_format_empty():
     """Green Path: Cleans out empty text blocks hidden inside structural lists."""
+    # 1. Setup Mock Environment
     msg = AIMessage(
         content=[{"type": "text", "text": " "}, {"type": "text", "text": ""}],
         tool_calls=[{"name": "test", "args": {}, "id": "call_123"}],
     )
+
+    # 2. Execute
     _sanitize_llm_response(msg)
+
+    # 3. Assertions
     assert msg.content == ""
 
 
 def test_sanitize_llm_response_success_list_format_valid():
     """Green Path: Preserves valid text blocks from lists and flattens them to a string."""
+    # 1. Setup Mock Environment
     msg = AIMessage(
         content=[{"type": "text", "text": "Valid Text"}, {"type": "text", "text": " "}],
         tool_calls=[{"name": "test", "args": {}, "id": "call_123"}],
     )
+
+    # 2. Execute
     _sanitize_llm_response(msg)
+
+    # 3. Assertions
     assert isinstance(msg.content, str)
     assert msg.content == "Valid Text"
 
@@ -144,6 +159,7 @@ def test_sanitize_llm_response_success_list_format_valid():
 
 def test_extract_modified_tex_files_success_extraction():
     """Green Path: Validates that LaTeX file modifications are successfully trapped."""
+    # 1. Setup Mock Environment
     # Set up a fake LLM response containing tool calls to modify a .tex file and a .py file
     mock_response = AIMessage(
         content="",
@@ -154,9 +170,10 @@ def test_extract_modified_tex_files_success_extraction():
         ],
     )
 
-    # Extract
+    # 2. Execute
     new_files = _extract_modified_tex_files(["/existing.tex"], mock_response)
 
+    # 3. Assertions
     # The .tex files should be added, the .py file ignored, and existing preserved
     assert "/existing.tex" in new_files
     assert "/src/report.tex" in new_files
@@ -166,6 +183,7 @@ def test_extract_modified_tex_files_success_extraction():
 
 def test_extract_modified_tex_files_success_deletion():
     """Green Path: Validates that deleted LaTeX files are removed from the compilation queue."""
+    # 1. Setup Mock Environment
     mock_response = AIMessage(
         content="",
         tool_calls=[
@@ -173,14 +191,17 @@ def test_extract_modified_tex_files_success_deletion():
         ],
     )
 
+    # 2. Execute
     new_files = _extract_modified_tex_files(["/src/report.tex", "/src/keep.tex"], mock_response)
 
+    # 3. Assertions
     assert "/src/report.tex" not in new_files
     assert "/src/keep.tex" in new_files
 
 
 def test_extract_modified_tex_files_success_rename():
     """Green Path: Validates that renamed LaTeX files update the queue correctly."""
+    # 1. Setup Mock Environment
     mock_response = AIMessage(
         content="",
         tool_calls=[
@@ -200,8 +221,10 @@ def test_extract_modified_tex_files_success_rename():
         ],
     )
 
+    # 2. Execute
     new_files = _extract_modified_tex_files(["/src/old.tex", "/src/other.tex"], mock_response)
 
+    # 3. Assertions
     # old.tex should be removed
     assert "/src/old.tex" not in new_files
     # new.tex should be added
@@ -219,13 +242,17 @@ def test_extract_modified_tex_files_success_rename():
 
 def test_filter_execution_context_success_prevents_hallucination():
     """Green Path: Replaces tool-less AI messages unless it is the very last message."""
+    # 1. Setup Mock Environment
     messages = [
         AIMessage(content="I claimed I did work here but used no tools."),  # should be replaced
         HumanMessage(content="Do another task"),  # should be kept
         AIMessage(content="I am the last message without tools."),  # should be kept natively
     ]
+
+    # 2. Execute
     filtered = _filter_execution_context(messages)
 
+    # 3. Assertions
     assert len(filtered) == 3
     assert "System Note" in filtered[0].content
     assert "Do another task" in filtered[1].content
@@ -234,6 +261,7 @@ def test_filter_execution_context_success_prevents_hallucination():
 
 def test_filter_execution_context_success_replaces_markers():
     """Green Path: Ensures orchestrator success markers are replaced with boundaries."""
+    # 1. Setup Mock Environment
     messages = [
         HumanMessage(content="Do a task"),
         AIMessage(content="✅ **Execution Complete**"),
@@ -242,8 +270,11 @@ def test_filter_execution_context_success_replaces_markers():
             content="Normal AI Message", tool_calls=[{"name": "test", "args": {}, "id": "call_123"}]
         ),
     ]
+
+    # 2. Execute
     filtered = _filter_execution_context(messages)
 
+    # 3. Assertions
     assert len(filtered) == 4
     assert "System Note" in filtered[1].content
     assert "System Note" in filtered[2].content
@@ -255,6 +286,7 @@ def test_filter_execution_context_fallback_handles_list_content():
     Edge Path: Verifies that context filtering clears out orchestration success markers
     even when they are wrapped in structured lists (Gemini provider payload style).
     """
+    # 1. Setup Mock Environment
     messages = [
         HumanMessage(content="Refactor values"),
         AIMessage(
@@ -269,8 +301,10 @@ def test_filter_execution_context_fallback_handles_list_content():
         ),
     ]
 
+    # 2. Execute
     filtered = _filter_execution_context(messages)
 
+    # 3. Assertions
     assert len(filtered) == 3
     assert "System Note" in filtered[1].content
     assert "Normal response text" in filtered[2].content
@@ -283,21 +317,30 @@ def test_filter_execution_context_fallback_handles_list_content():
 
 def test_is_tool_error_success_identifies_errors():
     """Green Path: Explicitly tests the internal string matching bounds of _is_tool_error."""
+    # 1. Setup Mock Environment
+    # (No external mocking required)
 
-    # 1. Hard Invocation Failures
-    assert _is_tool_error("write_file", "Tool execution failed: No access") is True
-
-    # 2. Sandbox Execution tools
-    assert _is_tool_error("run_python_script", "Traceback (most recent call last):") is True
-    assert _is_tool_error("compile_latex_document", "=== ERROR: Runaway argument") is True
-    assert _is_tool_error("run_pytest", "FAILED (failures=1)") is True
-
-    # 3. Standard Read/Write OS tools
-    assert _is_tool_error("read_files", "Error: File not found") is True
-
+    # 2. Execute
+    # Hard Invocation Failures
+    res_write = _is_tool_error("write_file", "Tool execution failed: No access")
+    # Sandbox Execution tools
+    res_py_err = _is_tool_error("run_python_script", "Traceback (most recent call last):")
+    res_tex_err = _is_tool_error("compile_latex_document", "=== ERROR: Runaway argument")
+    res_pytest_err = _is_tool_error("run_pytest", "FAILED (failures=1)")
+    # Standard Read/Write OS tools
+    res_read_err = _is_tool_error("read_files", "Error: File not found")
     # Non-errors should pass cleanly
-    assert _is_tool_error("run_python_script", "Execution Finished (Exit Code: 0)") is False
-    assert _is_tool_error("read_files", "File content here.") is False
+    res_py_ok = _is_tool_error("run_python_script", "Execution Finished (Exit Code: 0)")
+    res_read_ok = _is_tool_error("read_files", "File content here.")
+
+    # 3. Assertions
+    assert res_write is True
+    assert res_py_err is True
+    assert res_tex_err is True
+    assert res_pytest_err is True
+    assert res_read_err is True
+    assert res_py_ok is False
+    assert res_read_ok is False
 
 
 # ==========================================
@@ -310,6 +353,7 @@ def test_workspace_tools_node_success_config_injection(mocker):
     Green Path: Ensures the RunnableConfig is successfully propagated down
     from the graph layer to the execution registry (Dependency Injection validation).
     """
+    # 1. Setup Mock Environment
     tool_calls = [{"name": "run_python_script", "args": {}, "id": "call_123"}]
     state = {"messages": [AIMessage(content="", tool_calls=tool_calls)], "execution_retry_count": 0}
 
@@ -320,8 +364,10 @@ def test_workspace_tools_node_success_config_injection(mocker):
         "src.workspace_agent.orchestrator.nodes.execution.execute_tool_call", return_value="Success"
     )
 
+    # 2. Execute
     workspace_tools_node(state, config)
 
+    # 3. Assertions
     mock_executor.assert_called_once()
 
     # Extract arguments and verify the config was explicitly passed to the registry
@@ -332,6 +378,7 @@ def test_workspace_tools_node_success_config_injection(mocker):
 
 def test_workspace_tools_node_fallback_clarification_trap():
     """Edge Path: Ensures the tool loop intercepts human-in-the-loop requests without breaking."""
+    # 1. Setup Mock Environment
     tool_calls = [
         {
             "name": "ask_user_for_clarification",
@@ -341,9 +388,11 @@ def test_workspace_tools_node_fallback_clarification_trap():
     ]
     state = {"messages": [AIMessage(content="", tool_calls=tool_calls)], "execution_retry_count": 0}
 
+    # 2. Execute
     # Clarification traps bypass physical execution, so no mocker.patch is needed
     result = workspace_tools_node(state)
 
+    # 3. Assertions
     assert result["clarification_question"] == "Are you sure?"
     assert result["disambiguation_options"] is None
     assert "Clarification requested" in result["messages"][0].content
@@ -356,6 +405,7 @@ def test_workspace_tools_node_fallback_escape_hatch(mocker):
     Edge Path: Ensures that if the agent explicitly uses the escape hatch tool,
     transient errors generated by other tools in the same parallel batch are safely ignored.
     """
+    # 1. Setup Mock Environment
     tool_calls = [
         {"name": "run_python_script", "args": {}, "id": "call_fail"},
         {"name": "mark_task_already_completed", "args": {}, "id": "call_success"},
@@ -373,8 +423,10 @@ def test_workspace_tools_node_fallback_escape_hatch(mocker):
         side_effect=mock_tool_execution,
     )
 
+    # 2. Execute
     result = workspace_tools_node(state)
 
+    # 3. Assertions
     # The SyntaxError should be entirely scrubbed, and retries preserved but NOT incremented
     assert result["latest_traceback_error"] is None
     assert result["execution_retry_count"] == 1
@@ -382,6 +434,7 @@ def test_workspace_tools_node_fallback_escape_hatch(mocker):
 
 def test_workspace_tools_node_fallback_ignores_read_traceback(mocker):
     """Edge Path: Ensures read tools ignore Tracebacks in file contents."""
+    # 1. Setup Mock Environment
     tool_calls = [{"name": "read_files", "args": {}, "id": "call_123"}]
     state = {"messages": [AIMessage(content="", tool_calls=tool_calls)], "execution_retry_count": 0}
 
@@ -390,14 +443,17 @@ def test_workspace_tools_node_fallback_ignores_read_traceback(mocker):
         return_value="Traceback (most recent call last): False positive from reading a log file",
     )
 
+    # 2. Execute
     result = workspace_tools_node(state)
 
+    # 3. Assertions
     assert result["execution_retry_count"] == 0
     assert result["latest_traceback_error"] is None
 
 
 def test_workspace_tools_node_fallback_pytest_capture(mocker):
     """Edge Path: Ensures pytest failure signatures correctly increment the retry counter."""
+    # 1. Setup Mock Environment
     tool_calls = [{"name": "run_pytest", "args": {}, "id": "call_123"}]
     state = {"messages": [AIMessage(content="", tool_calls=tool_calls)], "execution_retry_count": 0}
 
@@ -406,14 +462,17 @@ def test_workspace_tools_node_fallback_pytest_capture(mocker):
         return_value="FAILED (failures=1)\nAssertionError: 2 != 3",
     )
 
+    # 2. Execute
     result = workspace_tools_node(state)
 
+    # 3. Assertions
     assert result["execution_retry_count"] == 1
     assert "FAILED (" in result["latest_traceback_error"]
 
 
 def test_workspace_tools_node_fallback_traceback_capture(mocker):
     """Edge Path: Ensures sandbox script crashes increment the retry counter."""
+    # 1. Setup Mock Environment
     tool_calls = [{"name": "run_python_script", "args": {}, "id": "call_123"}]
     state = {"messages": [AIMessage(content="", tool_calls=tool_calls)], "execution_retry_count": 0}
 
@@ -422,14 +481,17 @@ def test_workspace_tools_node_fallback_traceback_capture(mocker):
         return_value="Traceback (most recent call last): File missing",
     )
 
+    # 2. Execute
     result = workspace_tools_node(state)
 
+    # 3. Assertions
     assert result["execution_retry_count"] == 1
     assert "Traceback" in result["latest_traceback_error"]
 
 
 def test_workspace_tools_node_error_sandbox_crash_max_retries(mocker):
     """Red Path: workspace_tools_node aborts if sandbox crashes hit the retry limit."""
+    # 1. Setup Mock Environment
     tool_calls = [{"name": "run_python_script", "id": "1", "args": {}}]
     state = {
         "workspace_absolute_path": "/tmp/test",
@@ -442,8 +504,10 @@ def test_workspace_tools_node_error_sandbox_crash_max_retries(mocker):
         return_value="Traceback (most recent call last): error",
     )
 
+    # 2. Execute
     result = workspace_tools_node(state)
 
+    # 3. Assertions
     assert result.get("is_aborted") is True
     assert result.get("latest_traceback_error") is None
     assert "Execution Failed" in result["messages"][-1].content
@@ -456,6 +520,7 @@ def test_workspace_tools_node_error_sandbox_crash_max_retries(mocker):
 
 def test_execute_task_node_success_standard(mocker):
     """Green Path: Successfully invokes the execution LLM API without aborting."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.execution.sync_repository",
         return_value='{"status": "success"}',
@@ -476,8 +541,11 @@ def test_execute_task_node_success_standard(mocker):
         "execution_retry_count": 0,
         "messages": [HumanMessage(content="Do the task")],
     }
+
+    # 2. Execute
     result = execute_task_node(state, {"configurable": {"thread_id": "123"}})
 
+    # 3. Assertions
     # Verify the workflow did not trigger circuit breakers, abort, or increment retries
     assert result.get("is_aborted", False) is False
     assert result.get("latest_traceback_error") is None
@@ -490,6 +558,7 @@ def test_execute_task_node_success_standard(mocker):
 
 def test_execute_task_node_fallback_api_invocation_crash(mocker):
     """Edge Path: execute_task_node catches LLM API crash and returns a SYSTEM ERROR."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.execution.sync_repository",
         return_value='{"status": "success"}',
@@ -511,8 +580,11 @@ def test_execute_task_node_fallback_api_invocation_crash(mocker):
         "execution_retry_count": 0,
         "messages": [],
     }
+
+    # 2. Execute
     result = execute_task_node(state, {"configurable": {"thread_id": "123"}})
 
+    # 3. Assertions
     # Ensure the workflow did not abort, but instead injected the self-healing prompt
     assert result.get("is_aborted", False) is False
     assert "SYSTEM ERROR: The LLM API failed" in result["messages"][0].content
@@ -522,6 +594,7 @@ def test_execute_task_node_fallback_api_invocation_crash(mocker):
 
 def test_execute_task_node_error_api_invocation_crash_max_retries(mocker):
     """Red Path: execute_task_node aborts if API crashes hit the retry limit."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.execution.sync_repository",
         return_value='{"status": "success"}',
@@ -541,8 +614,11 @@ def test_execute_task_node_error_api_invocation_crash_max_retries(mocker):
         "execution_retry_count": 3,
         "messages": [],
     }
+
+    # 2. Execute
     result = execute_task_node(state, {"configurable": {"thread_id": "123"}})
 
+    # 3. Assertions
     assert result.get("is_aborted") is True
     assert "Fatal API or Parsing Error" in result["messages"][0].content
 
@@ -552,6 +628,7 @@ def test_execute_task_node_error_circuit_breaker():
     Red Path: Verifies that if the agent executes max_consecutive_tool_steps
     without human interaction, the circuit breaker safely aborts the workflow.
     """
+    # 1. Setup Mock Environment
     messages = [HumanMessage(content="Start loop")]
 
     limit = settings.agent.max_consecutive_tool_steps
@@ -562,14 +639,17 @@ def test_execute_task_node_error_circuit_breaker():
 
     state = {"workspace_absolute_path": "/tmp", "messages": messages}
 
+    # 2. Execute
     result = execute_task_node(state)
 
+    # 3. Assertions
     assert result.get("is_aborted") is True
     assert "Circuit breaker triggered" in result["messages"][0].content
 
 
 def test_execute_task_node_error_escalation_crash(mocker):
     """Red Path: execute_task_node catches TerminalEscalationError from the router."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.execution.sync_repository",
         return_value='{"status": "success"}',
@@ -586,15 +666,18 @@ def test_execute_task_node_error_escalation_crash(mocker):
         "workspace_absolute_path": "/tmp/test",
         "messages": [],
     }
+
+    # 2. Execute
     result = execute_task_node(state, {"configurable": {"thread_id": "123"}})
 
+    # 3. Assertions
     assert result.get("is_aborted") is True
     assert "Escalation Failed" in result["messages"][0].content
 
 
 def test_execute_task_node_error_sync_abort(mocker):
     """Red Path: Ensure execute_task_node aborts immediately if repository sync fails."""
-
+    # 1. Setup Mock Environment
     # Mock the sync repository to return a realistic error status
     mock_error_json = (
         '{"status": "error", "reason": "git_command_failed", '
@@ -613,8 +696,10 @@ def test_execute_task_node_error_sync_abort(mocker):
         "messages": [],
     }
 
+    # 2. Execute
     result = execute_task_node(state)
 
+    # 3. Assertions
     # Verify the node successfully trapped the sync failure and aborted
     assert result.get("is_aborted") is True
     assert "Sync Failed" in result["messages"][0].content
@@ -628,6 +713,7 @@ def test_execute_task_node_error_sync_abort(mocker):
 
 def test_update_memory_node_success_message_stripping(mocker):
     """Green Path: Ensures update_memory_node strips system rejections and tool calls."""
+    # 1. Setup Mock Environment
     mock_llm = mocker.Mock()
     mock_extractor = mocker.Mock()
 
@@ -662,7 +748,10 @@ def test_update_memory_node_success_message_stripping(mocker):
         "t1_base_calls": 0,
     }
 
+    # 2. Execute
     result = update_memory_node(state, config, store)
+
+    # 3. Assertions
     messages_update = result["messages"]
 
     # Isolate the RemoveMessage objects
@@ -677,6 +766,7 @@ def test_update_memory_node_success_standard(mocker):
     Green Path: Memory extraction successfully writes a structured profile to LangGraph Store and
     VectorDB.
     """
+    # 1. Setup Mock Environment
     mock_llm = mocker.Mock()
     mock_extractor = mocker.Mock()
 
@@ -710,8 +800,11 @@ def test_update_memory_node_success_standard(mocker):
     }
 
     state = {"messages": [HumanMessage(content="I like AI")], "t1_base_calls": 0}
+
+    # 2. Execute
     result = update_memory_node(state, config, store)
 
+    # 3. Assertions
     # verify it returns the incremented call count and DOES NOT return user_profile to state
     assert result["t1_base_calls"] == 1
     assert "user_profile" not in result
@@ -734,6 +827,7 @@ def test_update_memory_node_fallback_disk_backup_fails(mocker, capsys):
     Edge Path: If writing the local backup file fails, it should still update the
     LangGraph store.
     """
+    # 1. Setup Mock Environment
     mock_llm = mocker.Mock()
     mock_extractor = mocker.Mock()
 
@@ -763,8 +857,11 @@ def test_update_memory_node_fallback_disk_backup_fails(mocker, capsys):
     config = {"configurable": {"user_id": "test_user", "chroma_collection": mocker.Mock()}}
 
     state = {"messages": [], "t1_base_calls": 0}
+
+    # 2. Execute
     result = update_memory_node(state, config, store)
 
+    # 3. Assertions
     # Verify the node still succeeded and successfully released the busy lock
     assert result["is_busy"] is False
 
@@ -779,6 +876,7 @@ def test_update_memory_node_fallback_disk_backup_fails(mocker, capsys):
 
 def test_update_memory_node_fallback_llm_unavailable(mocker):
     """Edge Path: If the base tier LLM is offline, safely return without crashing."""
+    # 1. Setup Mock Environment
     # Simulate the router failing to find an active Base Tier LLM
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.execution.get_execution_llm_sequence",
@@ -786,7 +884,10 @@ def test_update_memory_node_fallback_llm_unavailable(mocker):
     )
 
     state = {"messages": [], "t1_base_calls": 0}
+
+    # 2. Execute
     result = update_memory_node(state)
 
+    # 3. Assertions
     # Should gracefully return an empty dict, skipping memory extraction entirely
     assert result == {}
