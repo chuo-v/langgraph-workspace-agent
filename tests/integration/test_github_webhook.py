@@ -8,18 +8,22 @@ from src.workspace_agent.integrations.github_webhook import (
 )
 
 # ==========================================
-# Component: parse_github_pr_action
+# Workflow: PR Action Parsing
 # ==========================================
 
 
 def test_parse_github_pr_action_success_merged():
     """Green Path: Validates extraction of the 'LGTM' signal when an agent branch is merged."""
+    # 1. Setup Mock Environment
     mock_payload = {
         "action": "closed",
         "pull_request": {"merged": True, "head": {"ref": "agent/fix-typo-1234"}},
     }
 
+    # 2. Execute
     result = parse_github_pr_action(mock_payload)
+
+    # 3. Assertions
     assert result == "LGTM"
 
 
@@ -27,12 +31,16 @@ def test_parse_github_pr_action_fallback_closed_unmerged():
     """
     Edge Path: Validates extraction of the 'abort' signal when an agent branch is closed manually.
     """
+    # 1. Setup Mock Environment
     mock_payload = {
         "action": "closed",
         "pull_request": {"merged": False, "head": {"ref": "agent/bad-code-4567"}},
     }
 
+    # 2. Execute
     result = parse_github_pr_action(mock_payload)
+
+    # 3. Assertions
     assert result == "abort"
 
 
@@ -41,17 +49,21 @@ def test_parse_github_pr_action_fallback_ignored_branches():
     Edge Path: Validates that PRs not created by the agent
     (e.g., humans merging 'feature' branches) are ignored.
     """
+    # 1. Setup Mock Environment
     mock_payload = {
         "action": "closed",
         "pull_request": {"merged": True, "head": {"ref": "feature/human-made-branch"}},
     }
 
+    # 2. Execute
     result = parse_github_pr_action(mock_payload)
+
+    # 3. Assertions
     assert result is None
 
 
 # ==========================================
-# Component: verify_github_signature
+# Workflow: Webhook Signature Verification
 # ==========================================
 
 
@@ -70,8 +82,10 @@ def test_verify_github_signature_success_valid(monkeypatch):
     expected_hash = hmac.new(secret.encode(), payload_body, hashlib.sha256).hexdigest()
     valid_signature = f"sha256={expected_hash}"
 
-    # 2. Execute & Assert
+    # 2. Execute
     result = verify_github_signature(payload_body, valid_signature)
+
+    # 3. Assertions
     assert result is True
 
 
@@ -86,8 +100,10 @@ def test_verify_github_signature_error_invalid(monkeypatch):
     payload_body = b'{"action": "malicious_payload"}'
     invalid_signature = "sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 
-    # 2. Execute & Assert
+    # 2. Execute
     result = verify_github_signature(payload_body, invalid_signature)
+
+    # 3. Assertions
     assert result is False
 
 
@@ -96,29 +112,28 @@ def test_verify_github_signature_error_missing_secret(monkeypatch, caplog):
     Red Path: If the user forgets to set the secret in .env,
     the gateway must fail closed and reject the payload to prevent spoofing attacks.
     """
-    # 1. Setup Mock Environment (delete the key)
+    # 1. Setup Mock Environment
     monkeypatch.delenv("GITHUB_WEBHOOK_SECRET", raising=False)
 
     payload_body = b'{"action": "closed"}'
     random_signature = "sha256=doesntmatter"
 
-    # 2. Execute & Assert
+    # 2. Execute
     result = verify_github_signature(payload_body, random_signature)
 
-    # Must explicitly fail closed
+    # 3. Assertions
     assert result is False
-
-    # Verify the security error was logged properly
     assert "Rejecting webhook to prevent spoofing" in caplog.text
 
 
 # ==========================================
-# Component: parse_agentic_ci_trigger
+# Workflow: Agentic CI Trigger Parsing
 # ==========================================
 
 
 def test_parse_agentic_ci_trigger_success_automatic_opened(mocker):
     """Green Path: Validates extraction of CI metadata when a PR is newly opened."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.integrations.github_webhook.settings.agent.allowed_github_users",
         ["test_user"],
@@ -134,8 +149,10 @@ def test_parse_agentic_ci_trigger_success_automatic_opened(mocker):
         "repository": {"full_name": "owner/repo", "name": "repo"},
     }
 
+    # 2. Execute
     result = parse_agentic_ci_trigger(payload)
 
+    # 3. Assertions
     assert result is not None
     assert result["pr_number"] == 101
     assert result["commit_sha"] == "abcdef123"
@@ -143,6 +160,7 @@ def test_parse_agentic_ci_trigger_success_automatic_opened(mocker):
 
 def test_parse_agentic_ci_trigger_success_automatic_synchronize(mocker):
     """Green Path: Validates extraction of CI metadata when a PR is updated with new commits."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.integrations.github_webhook.settings.agent.allowed_github_users",
         ["test_user"],
@@ -158,14 +176,17 @@ def test_parse_agentic_ci_trigger_success_automatic_synchronize(mocker):
         "repository": {"full_name": "owner/repo", "name": "repo"},
     }
 
+    # 2. Execute
     result = parse_agentic_ci_trigger(payload)
 
+    # 3. Assertions
     assert result is not None
     assert result["commit_sha"] == "0987654"
 
 
 def test_parse_agentic_ci_trigger_success_chatops_agent_test(mocker):
     """Green Path: Validates extraction of ChatOps triggers (@agent retest) on PR comments."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.integrations.github_webhook.settings.agent.allowed_github_users",
         ["test_user"],
@@ -181,13 +202,17 @@ def test_parse_agentic_ci_trigger_success_chatops_agent_test(mocker):
         "repository": {"full_name": "owner/repo", "name": "repo"},
     }
 
+    # 2. Execute
     result = parse_agentic_ci_trigger(payload)
+
+    # 3. Assertions
     assert result is not None
     assert result.get("is_chatops") is True
 
 
 def test_parse_agentic_ci_trigger_success_chatops_retest(mocker):
     """Green Path: Validates extraction of ChatOps triggers (@agent retest) on PR comments."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.integrations.github_webhook.settings.agent.allowed_github_users",
         ["test_user"],
@@ -209,8 +234,10 @@ def test_parse_agentic_ci_trigger_success_chatops_retest(mocker):
         "repository": {"full_name": "owner/repo", "name": "repo"},
     }
 
+    # 2. Execute
     result = parse_agentic_ci_trigger(payload)
 
+    # 3. Assertions
     assert result is not None
     assert result["pr_number"] == 201
     assert result.get("is_chatops") is True
@@ -218,6 +245,7 @@ def test_parse_agentic_ci_trigger_success_chatops_retest(mocker):
 
 def test_parse_agentic_ci_trigger_fallback_ignores_non_prs(mocker):
     """Edge Path: Ensures comments on standard issues (not PRs) are safely ignored."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.integrations.github_webhook.settings.agent.allowed_github_users",
         ["test_user"],
@@ -228,12 +256,16 @@ def test_parse_agentic_ci_trigger_fallback_ignores_non_prs(mocker):
         "comment": {"body": "/retest", "user": {"login": "test_user"}},
     }
 
+    # 2. Execute
     result = parse_agentic_ci_trigger(payload)
+
+    # 3. Assertions
     assert result is None
 
 
 def test_parse_agentic_ci_trigger_fallback_ignores_unrelated_comments(mocker):
     """Edge Path: Ensures standard conversational comments on PRs don't trigger the CI."""
+    # 1. Setup Mock Environment
     mocker.patch(
         "src.workspace_agent.integrations.github_webhook.settings.agent.allowed_github_users",
         ["test_user"],
@@ -244,5 +276,8 @@ def test_parse_agentic_ci_trigger_fallback_ignores_unrelated_comments(mocker):
         "comment": {"body": "Looks good to me!", "user": {"login": "test_user"}},
     }
 
+    # 2. Execute
     result = parse_agentic_ci_trigger(payload)
+
+    # 3. Assertions
     assert result is None
