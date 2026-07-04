@@ -25,19 +25,17 @@ from src.workspace_agent.tools.github import (
 
 
 @pytest.fixture
-def setup_git_workspace(tmp_path, monkeypatch, mocker):
+def setup_git_workspace(setup_workspaces, monkeypatch, mocker):
     """
     Creates a temporary safe workspace, initializes a real Git repository,
     and sets up isolated mocks so production GitHub tools can execute locally.
     """
-    safe_dir = tmp_path / "git"
-    safe_dir.mkdir()
-    monkeypatch.setenv("ALLOWED_PATHS", str(safe_dir))
+    safe_dir = setup_workspaces["safe"]
 
-    # inject the dummy token so production security checks pass
+    # Inject the dummy token so production security checks pass
     monkeypatch.setenv("GITHUB_TOKEN", "mock_secure_token_123")
 
-    # initialize a local git repository
+    # Initialize a local git repository
     repo = git.Repo.init(safe_dir)
     test_file = safe_dir / "README.md"
     test_file.write_text("# Initial Repository", encoding="utf-8")
@@ -45,22 +43,22 @@ def setup_git_workspace(tmp_path, monkeypatch, mocker):
     repo.index.add([str(test_file)])
     repo.index.commit("Initial commit")
 
-    # explicitly rename the default branch to 'main' to prevent CI failures
+    # Explicitly rename the default branch to 'main' to prevent CI failures
     # caused by legacy 'master' defaults in different environments
     repo.git.branch("-M", "main")
 
-    # create a local bare repository to act as 'origin' for ALL tests
+    # Create a local bare repository to act as 'origin' for ALL tests
     remote_dir = safe_dir.parent / "remote.git"
     git.Repo.init(remote_dir, bare=True)
     origin = repo.create_remote("origin", str(remote_dir))
     origin.push("main")
 
-    # mock the regex search so github.py accepts our local bare repo as a valid URL
+    # Mock the regex search so github.py accepts our local bare repo as a valid URL
     mock_match = mocker.MagicMock()
     mock_match.group.return_value = "owner/repo"
     mocker.patch("src.workspace_agent.tools.github.re.search", return_value=mock_match)
 
-    # mock set_url so production code doesn't overwrite our local bare repo route
+    # Mock set_url so production code doesn't overwrite our local bare repo route
     mocker.patch("git.remote.Remote.set_url")
 
     return safe_dir, repo

@@ -60,3 +60,23 @@ def mock_chroma_collection(mocker):
     )
 
     return mock_collection
+
+
+@pytest.fixture
+def setup_workspaces(tmp_path, monkeypatch):
+    """
+    Unified fixture that creates a temporary safe workspace and a temporary forbidden zone
+    to simulate the filesystem securely during tests.
+    """
+    # define the safe zone (simulating your allowed workspace)
+    safe_dir = tmp_path / "git"
+    safe_dir.mkdir()
+
+    # define the forbidden zone (simulating restricted system directories)
+    forbidden_dir = tmp_path / "ssh"
+    forbidden_dir.mkdir()
+
+    # explicitly point the environment variable to the safe zone
+    monkeypatch.setenv("ALLOWED_PATHS", str(safe_dir))
+
+    return {"safe": safe_dir, "forbidden": forbidden_dir}
