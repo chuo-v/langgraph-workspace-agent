@@ -15,18 +15,6 @@ from src.workspace_agent.tools.sandbox import (
 
 
 @pytest.fixture
-def setup_workspaces(tmp_path, monkeypatch):
-    """
-    Creates a temporary safe workspace and points the environment variables to it.
-    """
-    safe_dir = tmp_path / "git"
-    safe_dir.mkdir()
-    monkeypatch.setenv("ALLOWED_PATHS", str(safe_dir))
-
-    return safe_dir
-
-
-@pytest.fixture
 def mock_docker_client(mocker):
     """
     Mocks the Docker daemon and container lifecycle. Does NOT globally patch it,
@@ -121,7 +109,7 @@ def test_get_secure_mounts_success_masking(tmp_path):
 
 def test_run_python_script_success_execution(setup_workspaces, mock_docker_client):
     """Green Path: Simulates a successful Python script execution."""
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "01-08-eval-pipeline.py"
     test_file.write_text("print('Evaluations complete')", encoding="utf-8")
 
@@ -149,7 +137,7 @@ def test_run_python_script_fallback_docker_api_error(setup_workspaces, mocker):
     Edge Path: Verifies the tool safely catches and returns internal Docker
     daemon errors (like out of memory, or missing image).
     """
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "01-08-eval-pipeline.py"
     test_file.write_text("pass", encoding="utf-8")
 
@@ -169,7 +157,7 @@ def test_run_python_script_error_docker_daemon_offline(setup_workspaces, mocker)
     Red Path: Verifies that if `docker_client` is not successfully injected into the config
     at startup (because the daemon is offline), the tools gracefully abort.
     """
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "01-08-eval-pipeline.py"
     test_file.write_text("pass", encoding="utf-8")
 
@@ -192,7 +180,7 @@ def test_run_python_script_error_file_not_found(setup_workspaces):
     Red Path: Verifies the tool aborts gracefully if the requested
     script does not physically exist in the workspace.
     """
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     missing_file = safe_dir / "does_not_exist.py"
     result = run_python_script(str(missing_file), config={})
     assert "Error: Python script not found" in result
@@ -204,7 +192,7 @@ def test_run_python_script_error_traceback_capture(setup_workspaces, mock_docker
     Simulates a script crashing to ensure STDERR is properly captured and
     returned to the LLM so it can debug its own code.
     """
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "01-08-eval-pipeline.py"
     test_file.write_text("1 / 0", encoding="utf-8")
 
@@ -226,7 +214,8 @@ def test_run_python_script_error_unauthorized_path(setup_workspaces):
     Red Path: Proves that the path verification circuit breaker
     triggers before the Docker SDK is ever invoked.
     """
-    forbidden_file = setup_workspaces / ".." / "system" / "secret.py"
+    forbidden_file = setup_workspaces["safe"] / ".." / "system" / "secret.py"
+
     result = run_python_script(str(forbidden_file), config={})
     assert "Security Exception" in result
 
@@ -238,7 +227,7 @@ def test_run_python_script_error_unauthorized_path(setup_workspaces):
 
 def test_run_pytest_success_execution(setup_workspaces, mocker):
     """Green Path: Successfully executes pytest inside the container and returns logs."""
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "test_logic.py"
     test_file.write_text("def test_ok(): pass", encoding="utf-8")
 
@@ -307,7 +296,7 @@ def test_run_pytest_success_workspace_boundary_resolution(mocker, tmp_path):
 
 def test_run_pytest_fallback_test_failure(setup_workspaces, mocker):
     """Fallback Path: Successfully runs pytest, but correctly reports a test failure exit code."""
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "test_logic.py"
     test_file.write_text("def test_fail(): assert False", encoding="utf-8")
 
@@ -326,7 +315,7 @@ def test_run_pytest_fallback_test_failure(setup_workspaces, mocker):
 
 def test_run_pytest_error_not_found(setup_workspaces):
     """Red Path: Bypasses Docker entirely if the requested test file does not exist locally."""
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     missing_file = safe_dir / "test_missing.py"
     result = run_pytest(str(missing_file), config={})
     assert "Error: Test path not found" in result
@@ -339,7 +328,7 @@ def test_run_pytest_error_not_found(setup_workspaces):
 
 def test_compile_latex_document_success_compilation(setup_workspaces, mock_docker_client):
     """Green Path: Simulates a successful latexmk compilation."""
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "KAN-TabNet-report.tex"
     test_file.write_text(
         r"\documentclass{article}\begin{document}Test\end{document}", encoding="utf-8"
@@ -361,7 +350,7 @@ def test_compile_latex_document_error_compilation_failure(setup_workspaces, mock
     Red Path: Simulates a LaTeX compilation failure (e.g. syntax error)
     and ensures the compiler logs are returned to the agent.
     """
-    safe_dir = setup_workspaces
+    safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "broken-report.tex"
     test_file.write_text(r"\documentclass{article}", encoding="utf-8")
 
