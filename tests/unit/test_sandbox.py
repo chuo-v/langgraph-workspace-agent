@@ -45,12 +45,13 @@ def test_truncate_logs_success_preserves_short_logs():
 
 def test_truncate_logs_success_slices_massive_logs():
     """Green Path: Massive logs are safely truncated in the middle."""
-    # Create a 300-line log
+    # 1. Setup Mock Environment
     massive_log = "\n".join([f"Line {i}" for i in range(1, 301)])
 
-    # Restrict to 50 lines (top 10, bottom 40)
+    # 2. Execute
     truncated = _truncate_logs(massive_log, max_lines=50, head_lines=10, tail_lines=40)
 
+    # 3. Assertions
     assert "Line 10" in truncated
     assert "Line 11" not in truncated  # Sliced out
     assert "250 lines of logs truncated" in truncated
@@ -59,12 +60,15 @@ def test_truncate_logs_success_slices_massive_logs():
 
 def test_truncate_logs_fallback_parameter_safeguard():
     """Edge Path: Safeguards against invalid head/tail configurations by prioritizing the tail."""
+    # 1. Setup Mock Environment
     massive_log = "\n".join([f"Line {i}" for i in range(1, 301)])
 
+    # 2. Execute
     # Requesting 100 total lines, but the max is constrained to 50.
     # The function should prioritize the 50 tail lines and reduce head lines to 0.
     truncated = _truncate_logs(massive_log, max_lines=50, head_lines=50, tail_lines=50)
 
+    # 3. Assertions
     assert "Line 251" in truncated  # The tail is preserved
     assert "Line 1\n" not in truncated  # The head is safely sacrificed
     assert "250 lines of logs truncated" in truncated
@@ -79,6 +83,7 @@ def test_get_secure_mounts_success_masking(tmp_path):
     """
     Green Path: Verifies that _get_secure_mounts correctly masks sensitive files and submodules.
     """
+    # 1. Setup Mock Environment
     host_dir = tmp_path / "repo"
     host_dir.mkdir()
 
@@ -88,8 +93,10 @@ def test_get_secure_mounts_success_masking(tmp_path):
     (host_dir / "src" / ".env.local").touch()
     (host_dir / "secrets.pem").touch()
 
+    # 2. Execute
     volumes, tmpfs = _get_secure_mounts(host_dir)
 
+    # 3. Assertions
     # Check that the base mount is present
     assert any(f"{host_dir.absolute()}:/workspace:rw" in str(v) for v in volumes)
 
@@ -109,6 +116,7 @@ def test_get_secure_mounts_success_masking(tmp_path):
 
 def test_run_python_script_success_execution(setup_workspaces, mock_docker_client):
     """Green Path: Simulates a successful Python script execution."""
+    # 1. Setup Mock Environment
     safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "01-08-eval-pipeline.py"
     test_file.write_text("print('Evaluations complete')", encoding="utf-8")
@@ -117,8 +125,11 @@ def test_run_python_script_success_execution(setup_workspaces, mock_docker_clien
     container.logs.return_value = b"Evaluations complete"
 
     config = {"configurable": {"docker_client": client}}
+
+    # 2. Execute
     result = run_python_script(str(test_file), config=config)
 
+    # 3. Assertions
     assert "Execution Finished" in result
     assert "Exit Code: 0" in result
     assert "Evaluations complete" in result
@@ -137,6 +148,7 @@ def test_run_python_script_fallback_docker_api_error(setup_workspaces, mocker):
     Edge Path: Verifies the tool safely catches and returns internal Docker
     daemon errors (like out of memory, or missing image).
     """
+    # 1. Setup Mock Environment
     safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "01-08-eval-pipeline.py"
     test_file.write_text("pass", encoding="utf-8")
@@ -146,8 +158,11 @@ def test_run_python_script_fallback_docker_api_error(setup_workspaces, mocker):
     mock_client.containers.run.side_effect = docker.errors.APIError("Insufficient memory")
 
     config = {"configurable": {"docker_client": mock_client}}
+
+    # 2. Execute
     result = run_python_script(str(test_file), config=config)
 
+    # 3. Assertions
     assert "Docker API Error" in result
     assert "Insufficient memory" in result
 
@@ -157,20 +172,24 @@ def test_run_python_script_error_docker_daemon_offline(setup_workspaces, mocker)
     Red Path: Verifies that if `docker_client` is not successfully injected into the config
     at startup (because the daemon is offline), the tools gracefully abort.
     """
+    # 1. Setup Mock Environment
     safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "01-08-eval-pipeline.py"
     test_file.write_text("pass", encoding="utf-8")
 
     # Simulate daemon offline by not loading it into the config dict
     config = {"configurable": {"docker_client": None}}
+
     # Force the fallback to fail, simulating a completely unreachable daemon
     mocker.patch(
         "src.workspace_agent.tools.sandbox.docker.from_env",
         side_effect=Exception("Connection refused"),
     )
 
+    # 2. Execute
     result = run_python_script(str(test_file), config=config)
 
+    # 3. Assertions
     assert "Unexpected Error" in result
     assert "Failed to connect to Docker Daemon/Proxy" in result
 
@@ -192,6 +211,7 @@ def test_run_python_script_error_traceback_capture(setup_workspaces, mock_docker
     Simulates a script crashing to ensure STDERR is properly captured and
     returned to the LLM so it can debug its own code.
     """
+    # 1. Setup Mock Environment
     safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "01-08-eval-pipeline.py"
     test_file.write_text("1 / 0", encoding="utf-8")
@@ -203,8 +223,11 @@ def test_run_python_script_error_traceback_capture(setup_workspaces, mock_docker
     )
 
     config = {"configurable": {"docker_client": client}}
+
+    # 2. Execute
     result = run_python_script(str(test_file), config=config)
 
+    # 3. Assertions
     assert "Exit Code: 1" in result
     assert "ZeroDivisionError" in result
 
@@ -227,6 +250,7 @@ def test_run_python_script_error_unauthorized_path(setup_workspaces):
 
 def test_run_pytest_success_execution(setup_workspaces, mocker):
     """Green Path: Successfully executes pytest inside the container and returns logs."""
+    # 1. Setup Mock Environment
     safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "test_logic.py"
     test_file.write_text("def test_ok(): pass", encoding="utf-8")
@@ -239,8 +263,11 @@ def test_run_pytest_success_execution(setup_workspaces, mocker):
     mock_client.containers.run.return_value = mock_container
 
     config = {"configurable": {"docker_client": mock_client}}
+
+    # 2. Execute
     result = run_pytest(str(test_file), config=config)
 
+    # 3. Assertions
     assert "Exit Code: 0" in result
     assert "1 passed" in result
 
@@ -259,6 +286,7 @@ def test_run_pytest_success_workspace_boundary_resolution(mocker, tmp_path):
     """
     Green Path: Verifies that run_pytest strictly limits volume mounts to config.yaml boundaries.
     """
+    # 1. Setup Mock Environment
     # Create a mock monorepo structure
     repo_root = tmp_path / "monorepo"
     backend_root = repo_root / "backend"
@@ -283,8 +311,11 @@ def test_run_pytest_success_workspace_boundary_resolution(mocker, tmp_path):
     mock_client.containers.run.return_value = mock_container
 
     config = {"configurable": {"docker_client": mock_client}}
+
+    # 2. Execute
     run_pytest(str(test_file), config=config)
 
+    # 3. Assertions
     # Verify that docker run was called with the backend_root mounted, NOT the entire monorepo root
     run_kwargs = mock_client.containers.run.call_args[1]
     volumes = run_kwargs["volumes"]
@@ -296,6 +327,7 @@ def test_run_pytest_success_workspace_boundary_resolution(mocker, tmp_path):
 
 def test_run_pytest_fallback_test_failure(setup_workspaces, mocker):
     """Fallback Path: Successfully runs pytest, but correctly reports a test failure exit code."""
+    # 1. Setup Mock Environment
     safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "test_logic.py"
     test_file.write_text("def test_fail(): assert False", encoding="utf-8")
@@ -307,8 +339,11 @@ def test_run_pytest_fallback_test_failure(setup_workspaces, mocker):
     mock_client.containers.run.return_value = mock_container
 
     config = {"configurable": {"docker_client": mock_client}}
+
+    # 2. Execute
     result = run_pytest(str(test_file), config=config)
 
+    # 3. Assertions
     assert "Exit Code: 1" in result
     assert "1 failed" in result
 
@@ -328,6 +363,7 @@ def test_run_pytest_error_not_found(setup_workspaces):
 
 def test_compile_latex_document_success_compilation(setup_workspaces, mock_docker_client):
     """Green Path: Simulates a successful latexmk compilation."""
+    # 1. Setup Mock Environment
     safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "KAN-TabNet-report.tex"
     test_file.write_text(
@@ -338,8 +374,11 @@ def test_compile_latex_document_success_compilation(setup_workspaces, mock_docke
     container.logs.return_value = b"Output written on KAN-TabNet-report.pdf"
 
     config = {"configurable": {"docker_client": client}}
+
+    # 2. Execute
     result = compile_latex_document(str(test_file), config=config)
 
+    # 3. Assertions
     assert "Compilation Finished" in result
     assert "Exit Code: 0" in result
     assert "Output written on KAN-TabNet-report.pdf" in result
@@ -350,6 +389,7 @@ def test_compile_latex_document_error_compilation_failure(setup_workspaces, mock
     Red Path: Simulates a LaTeX compilation failure (e.g. syntax error)
     and ensures the compiler logs are returned to the agent.
     """
+    # 1. Setup Mock Environment
     safe_dir = setup_workspaces["safe"]
     test_file = safe_dir / "broken-report.tex"
     test_file.write_text(r"\documentclass{article}", encoding="utf-8")
@@ -359,8 +399,11 @@ def test_compile_latex_document_error_compilation_failure(setup_workspaces, mock
     container.logs.return_value = b"Runaway argument? Emergency stop."
 
     config = {"configurable": {"docker_client": client}}
+
+    # 2. Execute
     result = compile_latex_document(str(test_file), config=config)
 
+    # 3. Assertions
     assert "Compilation Finished" in result
     assert "Exit Code: 1" in result
     assert "Emergency stop." in result
