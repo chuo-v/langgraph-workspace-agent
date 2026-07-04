@@ -8,20 +8,18 @@
 name: langgraph-workspace-agent
 
 services:
-  # Secures the host by restricting the agent to container orchestration (create/delete)
-  # while blocking dangerous volume, swarm, and system-level administrative mutations.
+  # Intercepts Docker API requests from the workspace agent and inspects their JSON
+  # payloads. It enforces a strict whitelist to strip out dangerous configurations
+  # (e.g., privileged mode, malicious root bind mounts, host networking) before
+  # forwarding the sanitized payload to the host Docker daemon.
   docker-proxy:
-    image: tecnativa/docker-socket-proxy
+    build:
+      context: ./docker-dpi-proxy
     container_name: docker-socket-proxy
-    privileged: true
+    # Note: 'privileged: true' is explicitly omitted here. The proxy only requires
+    # file-level access to the read-only socket mount to function securely.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      CONTAINERS: 1
-      IMAGES: 1
-      NETWORKS: 1
-      POST: 1
-      DELETE: 1
     restart: unless-stopped
 
   gateway:
