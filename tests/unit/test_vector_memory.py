@@ -7,12 +7,15 @@ from src.workspace_agent.core import vector_memory
 
 def test_save_memory_success_standard(mocker):
     """Green Path: Verifies that memories are saved with the correct metadata."""
+    # 1. Setup Mock Environment
     mock_collection = mocker.Mock()
 
+    # 2. Execute
     vector_memory.save_memory(
         "test discovery", "thread_123", mock_collection, {"type": "operational_insight"}
     )
 
+    # 3. Assertions
     mock_collection.add.assert_called_once()
     _, kwargs = mock_collection.add.call_args
 
@@ -24,11 +27,14 @@ def test_save_memory_success_standard(mocker):
 
 def test_save_memory_fallback_exception(mocker, capsys):
     """Edge Path: Verifies that database errors are caught and printed without crashing."""
+    # 1. Setup Mock Environment
     mock_collection = mocker.Mock()
     mock_collection.add.side_effect = Exception("DB Connection Lost")
 
+    # 2. Execute
     vector_memory.save_memory("test discovery", "thread_123", mock_collection)
 
+    # 3. Assertions
     # Verify the error was printed to stdout
     captured = capsys.readouterr()
     assert "Failed to save memory to ChromaDB: DB Connection Lost" in captured.out
@@ -44,11 +50,14 @@ def test_semantic_search_success_global(mocker):
     Green Path: Verifies that omitting the thread_id searches globally across all threads for
     insights.
     """
+    # 1. Setup Mock Environment
     mock_collection = mocker.Mock()
     mock_collection.query.return_value = {"documents": [["Global Result"]]}
 
+    # 2. Execute
     results = vector_memory.semantic_search("python rules", mock_collection)
 
+    # 3. Assertions
     _, kwargs = mock_collection.query.call_args
     # Verify the fallback where clause correctly targets the operational_insight type
     assert kwargs["where"] == {"type": "operational_insight"}
@@ -57,13 +66,16 @@ def test_semantic_search_success_global(mocker):
 
 def test_semantic_search_success_standard(mocker):
     """Green Path: Verifies that search queries are correctly formulated and returned."""
+    # 1. Setup Mock Environment
     mock_collection = mocker.Mock()
     mock_collection.query.return_value = {
         "documents": [["Result 1: Use type hints", "Result 2: Use black"]]
     }
 
+    # 2. Execute
     results = vector_memory.semantic_search("python rules", mock_collection, "thread_123", limit=2)
 
+    # 3. Assertions
     mock_collection.query.assert_called_once()
     _, kwargs = mock_collection.query.call_args
 
@@ -83,11 +95,18 @@ def test_semantic_search_fallback_empty_query(mocker):
     Edge Path: Empty or whitespace-only queries should short-circuit and return [] without
     calling the DB.
     """
+    # 1. Setup Mock Environment
     mock_collection = mocker.Mock()
 
-    assert vector_memory.semantic_search("", mock_collection) == []
-    assert vector_memory.semantic_search("   ", mock_collection) == []
-    assert vector_memory.semantic_search(None, mock_collection) == []
+    # 2. Execute
+    result_empty = vector_memory.semantic_search("", mock_collection)
+    result_whitespace = vector_memory.semantic_search("   ", mock_collection)
+    result_none = vector_memory.semantic_search(None, mock_collection)
+
+    # 3. Assertions
+    assert result_empty == []
+    assert result_whitespace == []
+    assert result_none == []
 
     # Verify the ChromaDB client was never actually invoked
     mock_collection.query.assert_not_called()
@@ -95,11 +114,14 @@ def test_semantic_search_fallback_empty_query(mocker):
 
 def test_semantic_search_fallback_exception(mocker, capsys):
     """Edge Path: Verifies that search errors are caught and return empty lists."""
+    # 1. Setup Mock Environment
     mock_collection = mocker.Mock()
     mock_collection.query.side_effect = Exception("Search Timeout")
 
+    # 2. Execute
     results = vector_memory.semantic_search("python rules", mock_collection)
 
+    # 3. Assertions
     captured = capsys.readouterr()
     assert "Vector search failed: Search Timeout" in captured.out
     assert results == []
@@ -107,9 +129,12 @@ def test_semantic_search_fallback_exception(mocker, capsys):
 
 def test_semantic_search_fallback_no_results(mocker):
     """Edge Path: Verifies that an empty database response returns an empty list safely."""
+    # 1. Setup Mock Environment
     mock_collection = mocker.Mock()
     mock_collection.query.return_value = {}
 
+    # 2. Execute
     results = vector_memory.semantic_search("python rules", mock_collection)
 
+    # 3. Assertions
     assert results == []
