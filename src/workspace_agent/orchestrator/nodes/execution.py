@@ -477,10 +477,10 @@ def _post_process_tool_messages(
             if _is_tool_error(tool_name, res_str):
                 retries += 1
                 latest_err = res_str
-            else:
-                # It was an invalid tool call! Treat it as a hard error so retries increment
-                retries += 1
-                latest_err = str(msg.content)
+        else:
+            # It was an invalid tool call! Treat it as a hard error so retries increment
+            retries += 1
+            latest_err = str(msg.content)
 
     return clarify_q, disambig_opts, latest_err, retries
 
