@@ -25,7 +25,7 @@ from src.workspace_agent.integrations.github_webhook import (
 )
 from src.workspace_agent.integrations.telegram import send_telegram_message
 from src.workspace_agent.llm.callbacks import get_langfuse_callback
-from src.workspace_agent.orchestrator.graph import agent_app, pr_app
+from src.workspace_agent.orchestrator.graph import agent_app, agent_store, pr_app
 
 # configure logging
 logging.basicConfig(level=logging.INFO)
@@ -159,14 +159,25 @@ def _build_state_update(text: str, current_state) -> dict:
     pending_node = current_state.next[0]
     state_update = {"messages": [HumanMessage(content=text)]}
 
-    # handle explicit human abort commands
-    if text.strip().lower() in ["abort", "cancel", "stop", "nevermind", "exit"]:
+    cleaned_text = text.strip().lower()
+
+    # Handle natural language escapes and explicit commands to abandon the workflow
+    if cleaned_text in [
+        "abort",
+        "cancel",
+        "stop",
+        "nevermind",
+        "exit",
+        "/cleanup",
+        "/cancel",
+        "/abort",
+    ]:
         state_update["is_aborted"] = True
 
-    # check context using the values stored in the paused state
-    elif pending_node == "human_pr_node":
+    # Check context using the values stored in the paused state
+    elif pending_node in ["human_pr_node", "human_clarify_node"]:
         if current_state.values.get("pending_pr_url"):
-            state_update["human_approved"] = text.strip().upper() == "LGTM"
+            state_update["human_approved"] = cleaned_text == "lgtm"
 
     return state_update
 
@@ -574,6 +585,41 @@ async def _process_telegram_attachment(document: dict, current_text: str) -> str
     return current_text
 
 
+def _verify_telegram_secret(secret_token: str | None) -> None:
+    """Helper to verify the Telegram webhook secret token."""
+    expected_secret = os.getenv("TELEGRAM_SECRET_TOKEN")
+    if (
+        not expected_secret
+        or not secret_token
+        or not secrets.compare_digest(secret_token, expected_secret)
+    ):
+        logger.warning("Unauthorized access attempt: Invalid or missing Secret Token.")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def _extract_message_text(message: dict) -> str:
+    """Helper to extract and format text from a Telegram message, including attachments."""
+    text = message.get("text", "").strip()
+    caption = message.get("caption", "").strip()
+
+    if not text and caption:
+        text = caption
+
+    document = message.get("document")
+    photo = message.get("photo")
+
+    if document:
+        return await _process_telegram_attachment(document, text)
+
+    if photo:
+        warning_msg = (
+            "[System Note: Images are not currently supported, please send as a file/document.]"
+        )
+        return f"{text}\n\n{warning_msg}" if text else warning_msg
+
+    return text
+
+
 @app.post("/webhook")
 async def telegram_webhook(
     request: Request,
@@ -583,55 +629,30 @@ async def telegram_webhook(
     """
     The primary ingress route for Telegram updates.
     """
-    # fast-fail security check
-    expected_secret = os.getenv("TELEGRAM_SECRET_TOKEN")
-    if (
-        not expected_secret
-        or not x_telegram_bot_api_secret_token
-        or not secrets.compare_digest(x_telegram_bot_api_secret_token, expected_secret)
-    ):
-        logger.warning("Unauthorized access attempt: Invalid or missing Secret Token.")
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    # Fast-fail security check
+    _verify_telegram_secret(x_telegram_bot_api_secret_token)
 
-    # parse payload
+    # Parse payload
     try:
         payload = await request.json()
     except Exception as e:
         raise HTTPException(status_code=400, detail="Invalid JSON") from e
 
-    # extract message details
     message = payload.get("message", {})
     if not message:
-        # telegram sometimes sends edits or other updates; ignore if not a standard message
+        # Telegram sometimes sends edits or other updates; ignore if not a standard message
         return {"status": "ignored"}
 
+    # Strict whitelisting
     chat_id = str(message.get("chat", {}).get("id", ""))
     expected_chat_id = os.getenv("AUTHORIZED_OWNER_CHAT_ID")
-
-    # strict whitelisting
     if not chat_id or chat_id != expected_chat_id:
         logger.warning(f"Unauthorized chat ID detected: {chat_id}. Dropping payload.")
-        # return 200 OK so Telegram doesn't retry the delivery, but silently drop it
+        # Return 200 OK so Telegram doesn't retry the delivery, but silently drops it
         return {"status": "ok"}
 
-    text = message.get("text", "").strip()
-    caption = message.get("caption", "").strip()
-
-    # If it's an attachment, Telegram uses 'caption' instead of 'text' for the prompt
-    if not text and caption:
-        text = caption
-
-    document = message.get("document")
-    photo = message.get("photo")
-
-    if document:
-        text = await _process_telegram_attachment(document, text)
-    elif photo:
-        warning_msg = (
-            "[System Note: Images are not currently supported, please send as a file/document.]"
-        )
-        # Append cleanly whether they included a caption or not
-        text = f"{text}\n\n{warning_msg}" if text else warning_msg
+    # Extract text/attachments
+    text = await _extract_message_text(message)
 
     # Pack dynamic IO clients
     io_deps = IODependencies(
@@ -640,7 +661,7 @@ async def telegram_webhook(
         docker_client=getattr(request.app.state, "docker_client", None),
     )
 
-    # memory management (/reset)
+    # Memory management (/reset)
     if text == "/reset":
         new_thread = f"{chat_id}_{int(time.time())}"
         set_active_thread(chat_id, new_thread, io_deps.redis_client)
@@ -653,7 +674,7 @@ async def telegram_webhook(
 
     current_thread = get_active_thread(chat_id, io_deps.redis_client)
 
-    # concurrency protection (Redis distributed lock)
+    # Concurrency protection (Redis distributed lock)
     is_locked = False
     lock = None
     if io_deps.redis_client:
@@ -669,28 +690,35 @@ async def telegram_webhook(
         # Fallback to checking the LangGraph state if Redis is offline
         is_locked = is_agent_busy(current_thread)
 
+    # Handle active execution interruptions
+    command = text.strip().lower()
+    if is_locked and command in ["/stop", "/abort", "/cancel", "/halt"]:
+        agent_store.put(("abort_signals", current_thread), "abort", {"stop_type": "pause"})
+        logger.info(
+            f"Received manual pause command ({command}) for active thread: {current_thread}"
+        )
+        background_tasks.add_task(
+            send_telegram_message,
+            chat_id,
+            "🛑 Acknowledged. Pausing current task at the next checkpoint...",
+        )
+        return {"status": "ok"}
+
     if is_locked:
         logger.info("Agent is busy. Rejecting concurrent command.")
         # Delegate to background task to prevent blocking the async event loop
         background_tasks.add_task(
             send_telegram_message,
             chat_id,
-            "⚠️ I am currently executing a task. Please wait for it to finish.",
+            "⏳ I am currently executing a task. Please wait for it to finish.",
         )
         return {"status": "ok"}
 
-    # asynchronous handoff
+    # Asynchronous handoff
     logger.info("Authorized payload accepted. Queuing background task.")
-    background_tasks.add_task(
-        process_agent_message,
-        chat_id,
-        text,
-        current_thread,
-        io_deps,
-        lock,
-    )
+    background_tasks.add_task(process_agent_message, chat_id, text, current_thread, io_deps, lock)
 
-    # return immediately to satisfy Telegram's 5-second timeout requirement
+    # Return immediately to satisfy Telegram's 5-second timeout requirement
     return {"status": "ok"}
 
 
@@ -731,7 +759,7 @@ async def github_webhook(
         chat_id = os.getenv("AUTHORIZED_OWNER_CHAT_ID")
         thread_id = get_active_thread(chat_id, io_deps.redis_client)
 
-        # concurrency protection (Redis distributed lock)
+        # Concurrency protection (Redis distributed lock)
         is_locked = False
         lock = None
         if io_deps.redis_client:
