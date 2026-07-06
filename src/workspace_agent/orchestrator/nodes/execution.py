@@ -298,6 +298,25 @@ def execute_task_node(  # noqa: PLR0911, PLR0915
 
     thread_id = config.get("configurable", {}).get("thread_id", "default")
     user_id = config.get("configurable", {}).get("user_id", "default")
+
+    namespace = ("abort_signals", thread_id)
+    abort_item = store.get(namespace, "abort")
+
+    if abort_item:
+        store.delete(namespace, "abort")  # Acknowledge and clear the flag
+
+        return {
+            "messages": [
+                AIMessage(content="🛑 **Execution Paused:** I have halted my current task.")
+            ],
+            "clarification_question": (
+                "I stopped processing. Your branch and PR (if any) are perfectly safe.\n\n"
+                "• **To continue:** Just tell me what you want me to do next.\n"
+                "• **To abandon this task & delete the branch:** Type `/cleanup`"
+            ),
+            "latest_traceback_error": None,  # Ensure we don't trigger a retry loop
+        }
+
     tier = _resolve_execution_tier(state)
     requested_model = state.get("requested_model")
 
@@ -436,20 +455,73 @@ def _is_tool_error(tool_name: str, res_str: str) -> bool:
     return False
 
 
-def workspace_tools_node(state: AgentState, config: RunnableConfig = None) -> dict:
+def _post_process_tool_messages(
+    new_msgs: list, tool_calls: list, initial_retries: int
+) -> tuple[str | None, list | None, str | None, int]:
+    """Helper to extract business logic and error states from executed tools."""
+    clarify_q = None
+    disambig_opts = None
+    latest_err = None
+    retries = initial_retries
+
+    for msg in new_msgs:
+        tc = next((t for t in tool_calls if t["id"] == msg.tool_call_id), None)
+        if tc:
+            tool_name = tc["name"]
+            if tool_name == "ask_user_for_clarification":
+                clarify_q = tc["args"].get("question")
+                disambig_opts = tc["args"].get("options")
+                continue
+
+            res_str = str(msg.content)
+            if _is_tool_error(tool_name, res_str):
+                retries += 1
+                latest_err = res_str
+        else:
+            # It was an invalid tool call! Treat it as a hard error so retries increment
+            retries += 1
+            latest_err = str(msg.content)
+
+    return clarify_q, disambig_opts, latest_err, retries
+
+
+def workspace_tools_node(
+    state: AgentState, config: RunnableConfig = None, store: BaseStore = None
+) -> dict:
     """
     Custom node to natively execute tools sequentially.
     File system agents MUST execute tools sequentially to prevent race conditions
     when multiple tools attempt to edit the same file simultaneously.
     """
+    store = store or InMemoryStore()
+    thread_id = config.get("configurable", {}).get("thread_id", "default") if config else "default"
+    namespace = ("abort_signals", thread_id)
+
     new_msgs = []
     last_ai_msg = state["messages"][-1]
     tool_calls = getattr(last_ai_msg, "tool_calls", [])
     invalid_tool_calls = getattr(last_ai_msg, "invalid_tool_calls", [])
 
+    is_paused = False
+
     # 1. Force sequential execution for valid tools
     for tc in tool_calls:
         tool_name = tc["name"]
+
+        abort_item = store.get(namespace, "abort")
+        if abort_item:
+            is_paused = True
+            store.delete(namespace, "abort")
+
+        if is_paused:
+            new_msgs.append(
+                ToolMessage(
+                    content="Error: Execution manually paused by user.",
+                    name=tool_name,
+                    tool_call_id=tc["id"],
+                )
+            )
+            continue
 
         # Trap clarifications before executing physical tools
         if tool_name == "ask_user_for_clarification":
@@ -474,36 +546,30 @@ def workspace_tools_node(state: AgentState, config: RunnableConfig = None) -> di
             )
         )
 
-    # 3. Extract context for state updates
+    # 3. Extract context and post-process tool messages
     retries = state.get("execution_retry_count", 0)
-    clarify_q = None
-    disambig_opts = None
-    latest_err = None
-
-    # 4. Post-process the ToolMessages to enforce business logic
-    for msg in new_msgs:
-        tc = next((t for t in tool_calls if t["id"] == msg.tool_call_id), None)
-        if tc:
-            tool_name = tc["name"]
-            if tool_name == "ask_user_for_clarification":
-                clarify_q = tc["args"].get("question")
-                disambig_opts = tc["args"].get("options")
-                continue
-
-            res_str = str(msg.content)
-            if _is_tool_error(tool_name, res_str):
-                retries += 1
-                latest_err = res_str
-        else:
-            # It was an invalid tool call! Treat it as a hard error so retries increment
-            retries += 1
-            latest_err = str(msg.content)
+    clarify_q, disambig_opts, latest_err, retries = _post_process_tool_messages(
+        new_msgs, tool_calls, retries
+    )
 
     # If the agent explicitly marked the task as complete, clear transient errors
     if any(tc.get("name") == "mark_task_already_completed" for tc in tool_calls):
         return {
             "messages": new_msgs,
             "execution_retry_count": state.get("execution_retry_count", 0),
+            "latest_traceback_error": None,
+        }
+
+    if is_paused:
+        pause_msg = "🛑 **Execution Paused:** I stopped the current tool loop."
+        clarify_msg = (
+            "I halted the tool execution early.\n\n"
+            "• **To continue:** Just tell me what you want me to do next.\n"
+            "• **To abandon this task & delete the branch:** Type `/cleanup`"
+        )
+        return {
+            "messages": new_msgs + [AIMessage(content=pause_msg)],
+            "clarification_question": clarify_msg,
             "latest_traceback_error": None,
         }
 

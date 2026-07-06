@@ -247,6 +247,10 @@ def route_after_human_clarify(state: AgentState) -> str:
     if state.get("is_aborted"):
         return "cleanup_workflow"
 
+    # Route to cleanup if a merge (LGTM) occurs while paused
+    if state.get("human_approved"):
+        return "pr_merged"
+
     # Ensure the physical path is resolved before executing tools.
     # If a workflow aborted and the path is missing, force it through the parser
     # so the human's response can be mapped to an absolute path first.
@@ -255,7 +259,7 @@ def route_after_human_clarify(state: AgentState) -> str:
     if state.get("clarification_question") or state.get("disambiguation_options"):
         return "execute_task"
 
-    # if no options or questions, we were disambiguating the workspace intent; route back to parsing
+    # If no options or questions, we were disambiguating the workspace intent; route back to parsing
     return "parse_intent"
 
 

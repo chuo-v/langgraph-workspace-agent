@@ -376,6 +376,46 @@ def test_workspace_tools_node_success_config_injection(mocker):
     assert args[1] == config
 
 
+def test_workspace_tools_node_success_manual_pause(mocker):
+    """
+    Green Path: Ensures workspace_tools_node halts mid-execution if an abort signal is present.
+    """
+    # 1. Setup Mock Environment
+    tool_calls = [
+        {"name": "read_files", "args": {}, "id": "1"},
+        {"name": "write_file", "args": {}, "id": "2"},
+    ]
+    state = {"messages": [AIMessage(content="", tool_calls=tool_calls)]}
+    config = {"configurable": {"thread_id": "thread_pause_123"}}
+    store = InMemoryStore()
+
+    # Inject the pause signal
+    store.put(("abort_signals", "thread_pause_123"), "abort", {"stop_type": "pause"})
+
+    # Mock physical execution so it doesn't crash without real files
+    mocker.patch(
+        "src.workspace_agent.orchestrator.nodes.execution.execute_tool_call", return_value="Success"
+    )
+
+    # 2. Execute
+    result = workspace_tools_node(state, config, store)
+
+    # 3. Assertions
+    new_messages = result["messages"]
+
+    # It should iterate through the loop, inject the pause error for BOTH tools, and append the
+    # AI pause message
+    assert len(new_messages) == 3
+    assert "Error: Execution manually paused" in new_messages[0].content
+    assert "Error: Execution manually paused" in new_messages[1].content
+    assert "🛑 **Execution Paused:**" in new_messages[2].content
+
+    assert "To abandon this task & delete the branch" in result["clarification_question"]
+
+    # Verify the flag was properly cleared
+    assert store.get(("abort_signals", "thread_pause_123"), "abort") is None
+
+
 def test_workspace_tools_node_fallback_clarification_trap():
     """Edge Path: Ensures the tool loop intercepts human-in-the-loop requests without breaking."""
     # 1. Setup Mock Environment
@@ -554,6 +594,28 @@ def test_execute_task_node_success_standard(mocker):
     # Verify the AI message was properly appended to state
     assert isinstance(result["messages"][-1], AIMessage)
     assert result["messages"][-1].content == "I will do the task now."
+
+
+def test_execute_task_node_success_manual_pause():
+    """Green Path: Ensures execute_task_node halts immediately if an abort signal is present."""
+    # 1. Setup Mock Environment
+    state = {"messages": [HumanMessage(content="do a task")]}
+    config = {"configurable": {"thread_id": "thread_pause_123"}}
+    store = InMemoryStore()
+
+    # Inject the pause signal into the database before execution
+    store.put(("abort_signals", "thread_pause_123"), "abort", {"stop_type": "pause"})
+
+    # 2. Execute
+    result = execute_task_node(state, config, store)
+
+    # 3. Assertions
+    assert "🛑 **Execution Paused:**" in result["messages"][0].content
+    assert "To abandon this task & delete the branch" in result["clarification_question"]
+    assert result.get("latest_traceback_error") is None
+
+    # Verify the flag was properly cleared from memory
+    assert store.get(("abort_signals", "thread_pause_123"), "abort") is None
 
 
 def test_execute_task_node_fallback_api_invocation_crash(mocker):
