@@ -430,6 +430,21 @@ def test_route_after_execution_error_max_retries(mocker):
 # ==========================================
 
 
+def test_route_after_human_clarify_success_approved():
+    """Green Path: User merges a PR ('LGTM') while the agent is paused at clarification."""
+    # 1. Setup Mock Environment
+    state = {
+        "human_approved": True,
+        "is_aborted": False,
+    }
+
+    # 2. Execute
+    result = route_after_human_clarify(state)
+
+    # 3. Assertions
+    assert result == "pr_merged"
+
+
 def test_route_after_human_clarify_fallback_mid_task():
     """Edge Path: User resolved file conflict mid-task."""
     # 1. Setup Mock Environment

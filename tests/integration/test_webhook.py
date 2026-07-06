@@ -217,6 +217,41 @@ def test_webhook_success_valid_payload(setup_env, mocker):
     assert isinstance(args[3], IODependencies)
 
 
+def test_webhook_success_manual_pause(setup_env, mocker):
+    """
+    Green Path: Tests that when the agent is busy, sending a pause command (/stop)
+    intercepts the webhook, writes to the agent_store, and returns safely without
+    queueing a new process_agent_message task.
+    """
+    # 1. Setup Mock Environment
+    mocker.patch("src.workspace_agent.main.is_agent_busy", return_value=True)
+    mock_process = mocker.patch("src.workspace_agent.main.process_agent_message")
+    mock_send = mocker.patch("src.workspace_agent.main.send_telegram_message")
+    mock_store = mocker.patch("src.workspace_agent.main.agent_store")
+
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "test_secret_123"}
+    payload = {"message": {"chat": {"id": 999888777}, "text": "/stop"}}
+
+    # 2. Execute
+    response = client.post("/webhook", headers=headers, json=payload)
+
+    # 3. Assertions
+    assert response.status_code == 200
+    mock_process.assert_not_called()
+
+    # Verify the abort signal was written to the store
+    mock_store.put.assert_called_once()
+    args, _ = mock_store.put.call_args
+    assert args[0][0] == "abort_signals"
+    assert args[1] == "abort"
+    assert args[2]["stop_type"] == "pause"
+
+    # Verify the user was notified of the pause
+    mock_send.assert_called_once()
+    args, _ = mock_send.call_args
+    assert "Pausing current task" in args[1]
+
+
 def test_webhook_fallback_agent_busy(setup_env, mocker):
     """
     Edge Path: Tests the concurrency protection. If the agent is currently
