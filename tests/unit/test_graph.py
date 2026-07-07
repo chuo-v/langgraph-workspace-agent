@@ -2,17 +2,17 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import END
 
 from src.workspace_agent.orchestrator.graph import (
-    get_checkpointer,
-    route_after_compilation,
-    route_after_evaluation,
-    route_after_execution,
-    route_after_human_clarify,
-    route_after_human_pr,
-    route_after_intent,
-    route_after_llm,
-    route_after_pre_commit,
-    route_after_subgraph,
-    route_pr_entry,
+    _get_checkpointer,
+    _route_after_compilation,
+    _route_after_evaluation,
+    _route_after_execution,
+    _route_after_human_clarify,
+    _route_after_human_pr,
+    _route_after_intent,
+    _route_after_llm,
+    _route_after_pre_commit,
+    _route_after_subgraph,
+    _route_pr_entry,
 )
 
 # ==========================================
@@ -31,7 +31,7 @@ def test_get_checkpointer_success_redis(mocker):
     mock_saver = mocker.patch("src.workspace_agent.orchestrator.graph.RedisSaver")
 
     # 2. Execute
-    checkpointer = get_checkpointer()
+    checkpointer = _get_checkpointer()
 
     # 3. Assertions
     mock_redis_instance.ping.assert_called_once()
@@ -51,7 +51,7 @@ def test_get_checkpointer_fallback_memory_saver(mocker, capsys):
     mock_memory_saver = mocker.patch("src.workspace_agent.orchestrator.graph.MemorySaver")
 
     # 2. Execute
-    checkpointer = get_checkpointer()
+    checkpointer = _get_checkpointer()
     captured = capsys.readouterr()
 
     # 3. Assertions
@@ -70,7 +70,7 @@ def test_route_after_intent_success_conversational():
     state = {"intent_category": "conversational", "is_aborted": False}
 
     # 2. Execute
-    result = route_after_intent(state)
+    result = _route_after_intent(state)
 
     # 3. Assertions
     assert result == "conversational_reply"
@@ -88,7 +88,7 @@ def test_route_after_intent_success_high_confidence():
     }
 
     # 2. Execute
-    result = route_after_intent(state)
+    result = _route_after_intent(state)
 
     # 3. Assertions
     assert result == "execute_task"
@@ -104,7 +104,7 @@ def test_route_after_intent_fallback_cot_clarification():
     }
 
     # 2. Execute
-    result = route_after_intent(state)
+    result = _route_after_intent(state)
 
     # 3. Assertions
     assert result == "clarify"
@@ -122,7 +122,7 @@ def test_route_after_intent_fallback_low_confidence():
     }
 
     # 2. Execute
-    result = route_after_intent(state)
+    result = _route_after_intent(state)
 
     # 3. Assertions
     assert result == "clarify"
@@ -140,7 +140,7 @@ def test_route_after_intent_fallback_missing_workspace():
     }
 
     # 2. Execute
-    result = route_after_intent(state)
+    result = _route_after_intent(state)
 
     # 3. Assertions
     assert result == "clarify"
@@ -162,7 +162,7 @@ def test_route_after_llm_success_tool_calls():
     }
 
     # 2. Execute
-    result = route_after_llm(state)
+    result = _route_after_llm(state)
 
     # 3. Assertions
     assert result == "workspace_tools"
@@ -183,7 +183,7 @@ def test_route_after_llm_success_no_tools_max_retries(mocker):
     }
 
     # 2. Execute
-    result = route_after_llm(state)
+    result = _route_after_llm(state)
 
     # 3. Assertions
     assert result == "pull_request_subgraph"
@@ -200,7 +200,7 @@ def test_route_after_llm_success_read_only_no_tools():
     }
 
     # 2. Execute
-    result = route_after_llm(state)
+    result = _route_after_llm(state)
 
     # 3. Assertions
     assert result == "update_memory"
@@ -218,7 +218,7 @@ def test_route_after_execution_success_escape_hatch():
     state = {"messages": messages, "intent_category": "workspace_operation"}
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "pull_request_subgraph"
@@ -236,7 +236,7 @@ def test_route_after_execution_success_read_only():
     }
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "update_memory"
@@ -256,7 +256,7 @@ def test_route_after_execution_success_tool_loop():
     }
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "execute_task"
@@ -277,7 +277,7 @@ def test_route_after_execution_success_workspace_operation():
     }
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "pull_request_subgraph"
@@ -300,7 +300,7 @@ def test_route_after_execution_success_workspace_operation_no_modifications():
     }
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "pull_request_subgraph"
@@ -317,7 +317,7 @@ def test_route_after_llm_fallback_missing_tools():
     }
 
     # 2. Execute
-    result = route_after_llm(state)
+    result = _route_after_llm(state)
 
     # 3. Assertions
     assert result == "force_tool_retry"
@@ -332,7 +332,7 @@ def test_route_after_llm_fallback_empty_messages():
     }
 
     # 2. Execute
-    result = route_after_llm(state)
+    result = _route_after_llm(state)
 
     # 3. Assertions
     assert result == "pull_request_subgraph"
@@ -348,7 +348,7 @@ def test_route_after_execution_fallback_clarification_question():
     }
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "clarify"
@@ -363,7 +363,7 @@ def test_route_after_execution_fallback_disambiguate_files():
     }
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "clarify"
@@ -381,7 +381,7 @@ def test_route_after_execution_fallback_empty_messages():
     }
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "pull_request_subgraph"
@@ -398,7 +398,7 @@ def test_route_after_execution_fallback_retry_loop():
     }
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "execute_task"
@@ -419,7 +419,7 @@ def test_route_after_execution_error_max_retries(mocker):
     }
 
     # 2. Execute
-    result = route_after_execution(state)
+    result = _route_after_execution(state)
 
     # 3. Assertions
     assert result == "cleanup_workflow"
@@ -439,7 +439,7 @@ def test_route_after_human_clarify_success_approved():
     }
 
     # 2. Execute
-    result = route_after_human_clarify(state)
+    result = _route_after_human_clarify(state)
 
     # 3. Assertions
     assert result == "pr_merged"
@@ -455,7 +455,7 @@ def test_route_after_human_clarify_fallback_mid_task():
     }
 
     # 2. Execute
-    result = route_after_human_clarify(state)
+    result = _route_after_human_clarify(state)
 
     # 3. Assertions
     assert result == "execute_task"
@@ -471,7 +471,7 @@ def test_route_after_human_clarify_fallback_missing_path():
     }
 
     # 2. Execute
-    result = route_after_human_clarify(state)
+    result = _route_after_human_clarify(state)
 
     # 3. Assertions
     assert result == "parse_intent"
@@ -488,7 +488,7 @@ def test_route_after_human_clarify_fallback_workspace():
     }
 
     # 2. Execute
-    result = route_after_human_clarify(state)
+    result = _route_after_human_clarify(state)
 
     # 3. Assertions
     assert result == "parse_intent"
@@ -505,7 +505,7 @@ def test_route_pr_entry_success_agentic_ci():
     state = {"commit_sha": "abc1234", "pr_number": 42}
 
     # 2. Execute
-    result = route_pr_entry(state)
+    result = _route_pr_entry(state)
 
     # 3. Assertions
     assert result == "agentic_ci"
@@ -517,7 +517,7 @@ def test_route_pr_entry_success_compile_latex():
     state = {"modified_tex_files": ["main.tex"]}
 
     # 2. Execute
-    result = route_pr_entry(state)
+    result = _route_pr_entry(state)
 
     # 3. Assertions
     assert result == "compile_latex"
@@ -529,7 +529,7 @@ def test_route_pr_entry_success_run_pre_commit():
     state = {"modified_tex_files": []}
 
     # 2. Execute
-    result = route_pr_entry(state)
+    result = _route_pr_entry(state)
 
     # 3. Assertions
     assert result == "run_pre_commit"
@@ -541,7 +541,7 @@ def test_route_after_pre_commit_success_standard():
     state = {"is_aborted": False, "latest_traceback_error": None}
 
     # 2. Execute
-    result = route_after_pre_commit(state)
+    result = _route_after_pre_commit(state)
 
     # 3. Assertions
     assert result == "evaluate_diff"
@@ -553,7 +553,7 @@ def test_route_after_compilation_success_standard():
     state = {"is_aborted": False, "latest_traceback_error": None}
 
     # 2. Execute
-    result = route_after_compilation(state)
+    result = _route_after_compilation(state)
 
     # 3. Assertions
     assert result == "review_pr"
@@ -569,7 +569,7 @@ def test_route_after_evaluation_success_pass():
     }
 
     # 2. Execute
-    result = route_after_evaluation(state)
+    result = _route_after_evaluation(state)
 
     # 3. Assertions
     assert result == "review_pr"
@@ -585,7 +585,7 @@ def test_route_after_evaluation_success_read_only_pass():
     }
 
     # 2. Execute
-    result = route_after_evaluation(state)
+    result = _route_after_evaluation(state)
 
     # 3. Assertions
     assert result == END
@@ -597,7 +597,7 @@ def test_route_after_pre_commit_fallback_error():
     state = {"is_aborted": False, "latest_traceback_error": "pre_commit_error"}
 
     # 2. Execute
-    result = route_after_pre_commit(state)
+    result = _route_after_pre_commit(state)
 
     # 3. Assertions
     assert result == END
@@ -609,7 +609,7 @@ def test_route_after_compilation_fallback_syntax_error():
     state = {"is_aborted": False, "latest_traceback_error": "latex_compilation_error"}
 
     # 2. Execute
-    result = route_after_compilation(state)
+    result = _route_after_compilation(state)
 
     # 3. Assertions
     assert result == END
@@ -621,7 +621,7 @@ def test_route_after_evaluation_fallback_rejection():
     state = {"is_aborted": False, "latest_traceback_error": "semantic_review_rejection"}
 
     # 2. Execute
-    result = route_after_evaluation(state)
+    result = _route_after_evaluation(state)
 
     # 3. Assertions
     assert result == END
@@ -633,7 +633,7 @@ def test_route_after_pre_commit_error_max_retries():
     state = {"is_aborted": True}
 
     # 2. Execute
-    result = route_after_pre_commit(state)
+    result = _route_after_pre_commit(state)
 
     # 3. Assertions
     assert result == END
@@ -645,7 +645,7 @@ def test_route_after_compilation_error_max_retries():
     state = {"is_aborted": True}
 
     # 2. Execute
-    result = route_after_compilation(state)
+    result = _route_after_compilation(state)
 
     # 3. Assertions
     assert result == END
@@ -662,7 +662,7 @@ def test_route_after_subgraph_success_agentic_ci():
     state = {"repo_full_name": "owner/repo", "commit_sha": "abc1234", "is_aborted": False}
 
     # 2. Execute
-    result = route_after_subgraph(state)
+    result = _route_after_subgraph(state)
 
     # 3. Assertions
     assert result == END
@@ -679,7 +679,7 @@ def test_route_after_subgraph_success_standard():
     }
 
     # 2. Execute
-    result = route_after_subgraph(state)
+    result = _route_after_subgraph(state)
 
     # 3. Assertions
     assert result == "human_pr_node"
@@ -694,7 +694,7 @@ def test_route_after_human_pr_success_approved():
     }
 
     # 2. Execute
-    result = route_after_human_pr(state)
+    result = _route_after_human_pr(state)
 
     # 3. Assertions
     assert result == "pr_merged"
@@ -706,7 +706,7 @@ def test_route_after_subgraph_fallback_error():
     state = {"is_aborted": False, "latest_traceback_error": "semantic_review_rejection"}
 
     # 2. Execute
-    result = route_after_subgraph(state)
+    result = _route_after_subgraph(state)
 
     # 3. Assertions
     assert result == "execute_task"
@@ -718,7 +718,7 @@ def test_route_after_subgraph_fallback_hallucination_retry():
     state = {"latest_traceback_error": "hallucinated_success", "is_aborted": False}
 
     # 2. Execute
-    result = route_after_subgraph(state)
+    result = _route_after_subgraph(state)
 
     # 3. Assertions
     assert result == "execute_task"
@@ -734,7 +734,7 @@ def test_route_after_subgraph_fallback_human_feedback():
     }
 
     # 2. Execute
-    result = route_after_subgraph(state)
+    result = _route_after_subgraph(state)
 
     # 3. Assertions
     assert result == "execute_task"
@@ -749,7 +749,7 @@ def test_route_after_human_pr_fallback_feedback():
     }
 
     # 2. Execute
-    result = route_after_human_pr(state)
+    result = _route_after_human_pr(state)
 
     # 3. Assertions
     assert result == "execute_task"
@@ -766,16 +766,16 @@ def test_global_routing_error_abort_override():
     state = {"is_aborted": True}
 
     # 2. Execute
-    result_intent = route_after_intent(state)
-    result_llm = route_after_llm(state)
-    result_exec = route_after_execution(state)
-    result_subgraph = route_after_subgraph(state)
-    result_clarify = route_after_human_clarify(state)
-    result_pr = route_after_human_pr(state)
+    result_intent = _route_after_intent(state)
+    result_llm = _route_after_llm(state)
+    result_exec = _route_after_execution(state)
+    result_subgraph = _route_after_subgraph(state)
+    result_clarify = _route_after_human_clarify(state)
+    result_pr = _route_after_human_pr(state)
 
-    result_eval = route_after_evaluation(state)
-    result_comp = route_after_compilation(state)
-    result_pre = route_after_pre_commit(state)
+    result_eval = _route_after_evaluation(state)
+    result_comp = _route_after_compilation(state)
+    result_pre = _route_after_pre_commit(state)
 
     # 3. Assertions
     assert result_intent == "cleanup_workflow"
