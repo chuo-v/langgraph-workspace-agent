@@ -34,7 +34,58 @@ You do not need active API keys or Cloudflare tunnels to run the deterministic t
 
 ---
 
-## 2. Code Quality and Linting
+## 2. Coding Guidelines and Best Practices
+
+To maintain a highly readable and easily navigable codebase as the workspace agent scales, all contributions should adhere to the following architectural and stylistic guidelines.
+
+### 1. Code Organization: The "Step-Down" Rule
+Code is parsed and reasoned over by humans and autonomous agents far more often than it is generated. Files should be structured for top-down readability, keeping implementations localized to where they are used.
+
+* **Locality of Behavior:** Define public or primary functions first, followed immediately by the private helper functions they rely on.
+* **Sequential Ordering:** If a primary function `A()` calls helpers `_B()` and `_C()`, define them physically in the order they are executed: `A` -> `_B` -> `_C`.
+* **Avoid "Junk Drawer" Sections:** Do not group all helper functions at the top or bottom of a file unless they are universally shared across the entire module. Helpers specific to a single route or workflow should live adjacent to that workflow.
+
+### 2. Structural Delineation (Architectural Banners)
+Files should read like a clear table of contents when code blocks are collapsed. We use visual section dividers to establish major architectural boundaries for high-level navigation.
+
+* **Major Groupings Only:** Section banners must be reserved for major structural segments of a file (e.g., distinguishing between State Graph Definitions, Conditional Routing Logic, and Checkpointer Attachment). Do not use banners to separate individual function-helper pairings.
+* **Refactoring Signal:** If a module requires more than 4–5 distinct section banners to organize its code, it is a primary indicator that the file has grown too large and should be broken out into smaller sub-modules.
+
+**Format:**
+```python
+# ==========================================
+# Domain / Workflow Name
+# ==========================================
+```
+
+### 3. Encapsulation and Public API Contracts
+
+Because Python lacks strict runtime access modifiers, we rely on precise structural conventions and static types to explicitly define the public API surface of our modules.
+
+* **Private Encapsulation:** Any internal implementation detail, function, or routing node that is not meant to be imported outside its current module **must** be prefixed with a single leading underscore (e.g., `_apply_routing_structured_output`, `_route_pr_entry`).
+* **Strict Type Hinting:** All functions (both public and private helper functions), graph nodes, and tool definitions must use explicit Python type hints for parameters and return states. This ensures local static analysis checks pass and enables AI models to construct accurate tool-calling schemas.
+* **Explicit Module Exports:** For major boundary files (such as nodes, routers, and entry points), always explicitly define `__all__ = ["PublicClass", "public_function"]`. This enforces an airtight contract for external modules and prevents namespace pollution.
+
+### 4. AI-Optimized Docstrings
+
+In an agent-assisted codebase, docstrings are not just for humans; they serve as semantic anchors for LLMs.
+
+* **Tools:** Treat tool docstrings as functional prompt engineering blocks. Always specify explicit invocation preconditions and expected side effects. Never alter them during routine refactoring without validating the impact on the LLM's behavior.
+* **Public APIs & Nodes:** All exported functions and graph nodes must include a docstring detailing the expected state transitions and exceptions. LLMs rely on these to understand external contracts during multi-file navigation.
+* **Private Helpers:** You must write a brief 1–2 sentence docstring for all internal helper functions. Clearly state the architectural intent or edge-case handling. This explicit context prevents autonomous agents from hallucinating logic during automated refactoring.
+* **Variables:** Docstrings or inline comments are optional for variables. Rely primarily on clear, descriptive naming conventions and explicit static typing to ensure variables are self-documenting.
+
+### 5. File Size and Modularity (Separation of Concerns)
+
+As modules grow, they naturally accumulate responsibilities. To prevent bottleneck files (like a monolithic `main.py`):
+
+* **Keep I/O and State Separate:** Isolate network ingress (webhooks, API routes) from business logic (graph orchestration, tool execution).
+* **Domain Grouping:** When registering tools or capabilities within a single registry file, group them logically by domain using minor inline dividers (e.g., `# === Git Tools ===`, `# === Filesystem Tools ===`) rather than maintaining a single flat list.
+* **Refactoring Triggers:** If a single file handles lifecycle management, webhook parsing, and integration-specific logic, it is time to abstract those domains into a dedicated `api/` or `routes/` directory.
+
+---
+
+## 3. Code Quality and Linting
 
 `ruff` is used to guarantee the codebase remains immaculately formatted and highly performant. Before submitting a Pull Request, ensure your code passes the strict formatting checks defined in `pyproject.toml`.
 
@@ -44,15 +95,13 @@ ruff check .
 
 # Automatically format code
 ruff format .
-
-
 ```
 
 *Note: The GitHub Actions CI pipeline will automatically fail if `ruff` detects unformatted code.*
 
 ---
 
-## 3. Adding Custom MCP Tools
+## 4. Adding Custom MCP Tools
 
 To expand the agent's capabilities, custom tools can be added to the execution environment.
 
@@ -61,7 +110,7 @@ To expand the agent's capabilities, custom tools can be added to the execution e
 
 ---
 
-## 4. Running the Test Suite (Unit & Integration)
+## 5. Running the Test Suite (Unit & Integration)
 
 The test suite validates the deterministic components of the agent: webhook ingress, tool execution fallbacks, configuration parsing, and dependency injection.
 
@@ -69,7 +118,6 @@ To execute the standard test suite, run:
 
 ```bash
 pytest tests/unit/ tests/integration/ -v
-
 ```
 
 ### Mocking External Infrastructure
@@ -82,7 +130,7 @@ Because the agent physically manipulates the host machine and communicates with 
 
 ---
 
-## 5. Executing Agentic Evaluations (Evals)
+## 6. Executing Agentic Evaluations (Evals)
 
 Standard unit tests cannot reliably validate non-deterministic LLM logic. If you modify the system prompts in [`prompts.yaml`](../src/workspace_agent/core/prompts.yaml) or change the `Tier 1` routing logic, you must run the **Evaluation Pipeline** to ensure you haven't introduced regressions (e.g., the agent hallucinating workspaces or entering runaway tool loops).
 
@@ -107,7 +155,6 @@ python tests/evals/run_router_evals.py
 
 # Evaluate the End-to-End Tool Execution
 python tests/evals/run_e2e_evals.py
-
 ```
 
 ### How Evals Work (Langfuse Integration)
