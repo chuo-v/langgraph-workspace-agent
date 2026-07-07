@@ -1,4 +1,4 @@
-# 04. Usage and Workflows
+# 05. Usage and Workflows
 
 Once your background daemon is running and the Telegram webhook is active, the agent acts as your detached, mobile-first engineering partner. This guide covers how to communicate with the agent, explicitly control its reasoning engines, manage conversational threads, and understand the lifecycle of a task from initial prompt to merged code.
 
