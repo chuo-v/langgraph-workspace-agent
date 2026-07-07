@@ -1,4 +1,4 @@
-# 03. Architecture Deep Dive
+# 04. Architecture Deep Dive
 
 The LangGraph Workspace Agent is not a simple linear script; it is a fault-tolerant finite state machine designed to run persistently as a background daemon. This document breaks down the core architectural pillars: the LangGraph orchestration, the dual-layer memory system, the Docker-out-of-Docker sandbox, and the local telemetry stack.
 

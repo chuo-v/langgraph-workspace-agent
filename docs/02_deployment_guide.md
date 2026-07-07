@@ -1,4 +1,4 @@
-# 01. Deployment Guide
+# 02. Deployment Guide
 
 This guide covers the end-to-end process of setting up the LangGraph Workspace Agent. Because the agent is designed to run asynchronously and receive commands remotely via Telegram, the deployment process requires setting up a persistent host environment, securely configuring API tokens, and establishing a webhook tunnel.
 
