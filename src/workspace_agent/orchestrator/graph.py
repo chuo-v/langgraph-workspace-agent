@@ -12,13 +12,12 @@ from src.workspace_agent.core.config import settings
 from src.workspace_agent.core.state import AgentState, PRState
 from src.workspace_agent.orchestrator.nodes import execution, github_lifecycle, routing
 
-# ==========================================
-# Constants
-# ==========================================
+__all__ = ["pr_app", "agent_app"]
+
 MIN_ROUTER_CONFIDENCE = 0.85
 
 # ==========================================
-# 1. Pull Request Sub-Graph (Bounded Context)
+# 1. Pull Request Sub-Graph
 # ==========================================
 pr_workflow = StateGraph(PRState)
 
@@ -29,7 +28,11 @@ pr_workflow.add_node("review_pr", github_lifecycle.review_pr_node)
 pr_workflow.add_node("agentic_ci", github_lifecycle.agentic_ci_node)
 
 
-def route_pr_entry(state: PRState) -> str:
+def _route_pr_entry(state: PRState) -> str:
+    """
+    Routes initial PR tasks based on the presence of CI triggers, modified tex files,
+    or normal execution.
+    """
     # If commit_sha is present, this is a CI trigger
     if state.get("commit_sha") or state.get("pr_number"):
         return "agentic_ci"
@@ -39,7 +42,11 @@ def route_pr_entry(state: PRState) -> str:
     return "run_pre_commit"
 
 
-def route_after_pre_commit(state: PRState) -> str:
+def _route_after_pre_commit(state: PRState) -> str:
+    """
+    Evaluates pre-commit hook results to route to diff evaluation or abort back to
+    parent on unrecoverable errors.
+    """
     if state.get("is_aborted"):
         return END
     if state.get("latest_traceback_error") == "pre_commit_error":
@@ -48,7 +55,11 @@ def route_after_pre_commit(state: PRState) -> str:
     return "evaluate_diff"
 
 
-def route_after_compilation(state: PRState) -> str:
+def _route_after_compilation(state: PRState) -> str:
+    """
+    Evaluates LaTeX compilation results, routing to PR review on success or
+    exiting on failure.
+    """
     if state.get("is_aborted"):
         return END
     if state.get("latest_traceback_error") == "latex_compilation_error":
@@ -57,7 +68,11 @@ def route_after_compilation(state: PRState) -> str:
     return "review_pr"
 
 
-def route_after_evaluation(state: PRState) -> str:
+def _route_after_evaluation(state: PRState) -> str:
+    """
+    Determines if the semantic diff evaluation succeeded, routing to PR review
+    or exiting on read-only/error states.
+    """
     if state.get("is_aborted"):
         return END
     if state.get("latest_traceback_error"):
@@ -69,10 +84,10 @@ def route_after_evaluation(state: PRState) -> str:
     return "review_pr"
 
 
-pr_workflow.set_conditional_entry_point(route_pr_entry)
-pr_workflow.add_conditional_edges("run_pre_commit", route_after_pre_commit)
-pr_workflow.add_conditional_edges("compile_latex", route_after_compilation)
-pr_workflow.add_conditional_edges("evaluate_diff", route_after_evaluation)
+pr_workflow.set_conditional_entry_point(_route_pr_entry)
+pr_workflow.add_conditional_edges("run_pre_commit", _route_after_pre_commit)
+pr_workflow.add_conditional_edges("compile_latex", _route_after_compilation)
+pr_workflow.add_conditional_edges("evaluate_diff", _route_after_evaluation)
 
 # Review PR and Agentic CI always exit.
 pr_workflow.add_edge("review_pr", END)
@@ -87,7 +102,6 @@ pr_app = pr_workflow.compile()
 # ==========================================
 workflow = StateGraph(AgentState)
 
-# add all nodes to the graph
 workflow.add_node("parse_intent", routing.parse_intent_node)
 workflow.add_node("conversational_reply", routing.conversational_reply_node)
 workflow.add_node("clarify", routing.clarification_node)
@@ -101,8 +115,7 @@ workflow.add_node("pr_merged", github_lifecycle.pr_merged_node)
 workflow.add_node("force_tool_retry", execution.force_tool_retry_node)
 
 
-# Inject the Sub-Graph as a standard functional node
-def pull_request_subgraph_node(state: AgentState, config: RunnableConfig) -> dict:
+def _pull_request_subgraph_node(state: AgentState, config: RunnableConfig) -> dict:
     """Explicitly maps the subgraph's terminal state flags back to the parent AgentState."""
     result = pr_app.invoke(state, config)
     return {
@@ -121,14 +134,14 @@ def pull_request_subgraph_node(state: AgentState, config: RunnableConfig) -> dic
     }
 
 
-workflow.add_node("pull_request_subgraph", pull_request_subgraph_node)
+workflow.add_node("pull_request_subgraph", _pull_request_subgraph_node)
 
 
-# ==========================================
-# Parent Conditional Edge Logic
-# ==========================================
-def route_after_intent(state: AgentState) -> str:
-    """Routes based on the Tier 1 model's intent classification."""
+def _route_after_intent(state: AgentState) -> str:
+    """
+    Routes based on the Tier 1 model's intent classification, checking confidence
+    and workspace path resolution.
+    """
     if state.get("is_aborted"):
         return "cleanup_workflow"
     if state.get("intent_category") == "conversational":
@@ -148,8 +161,11 @@ def route_after_intent(state: AgentState) -> str:
     return "execute_task"
 
 
-def route_after_llm(state: AgentState) -> str:
-    """Routes to the ToolNode if the LLM generated tool calls, otherwise evaluates the diff."""
+def _route_after_llm(state: AgentState) -> str:
+    """
+    Routes to the ToolNode if the LLM generated tool calls, forces retries on
+    un-called tools, or evaluates the diff.
+    """
     if state.get("is_aborted"):
         return "cleanup_workflow"
 
@@ -177,13 +193,13 @@ def route_after_llm(state: AgentState) -> str:
 
     # 3. If it didn't use any tools and retries are exhausted, or if it already used tools and
     #    finished, pass forward
-    return route_after_execution(state)
+    return _route_after_execution(state)
 
 
-def route_after_execution(state: AgentState) -> str:  # noqa: PLR0911
+def _route_after_execution(state: AgentState) -> str:  # noqa: PLR0911
     """
-    Evaluates the execution node's output to determine if the workflow
-    should proceed to the evaluation phase or terminate early.
+    Evaluates the execution node's output to determine if the workflow should proceed
+    to the evaluation phase or terminate early.
     """
     if state.get("is_aborted"):
         return "cleanup_workflow"
@@ -218,8 +234,11 @@ def route_after_execution(state: AgentState) -> str:  # noqa: PLR0911
     return "pull_request_subgraph"
 
 
-def route_after_subgraph(state: AgentState) -> str:
-    """Evaluates the state payload returned from the isolated PR subgraph."""
+def _route_after_subgraph(state: AgentState) -> str:
+    """
+    Evaluates the state payload returned from the isolated PR subgraph to route to
+    human review or execution retries.
+    """
     if state.get("is_aborted"):
         return "cleanup_workflow"
 
@@ -243,7 +262,11 @@ def route_after_subgraph(state: AgentState) -> str:
     return "update_memory"
 
 
-def route_after_human_clarify(state: AgentState) -> str:
+def _route_after_human_clarify(state: AgentState) -> str:
+    """
+    Evaluates human clarification input to either execute tasks, parse new intent,
+    or handle external merges.
+    """
     if state.get("is_aborted"):
         return "cleanup_workflow"
 
@@ -263,8 +286,11 @@ def route_after_human_clarify(state: AgentState) -> str:
     return "parse_intent"
 
 
-def route_after_human_pr(state: AgentState) -> str:
-    """Routes execution after the user has reviewed the pending Pull Request."""
+def _route_after_human_pr(state: AgentState) -> str:
+    """
+    Routes execution after the user has reviewed the pending Pull Request, returning
+    to execution on rejection.
+    """
     if state.get("is_aborted"):
         return "cleanup_workflow"
     if state.get("human_approved"):
@@ -274,39 +300,32 @@ def route_after_human_pr(state: AgentState) -> str:
     return "execute_task"
 
 
-# ==========================================
-# Parent Edge Mapping
-# ==========================================
-
 workflow.set_entry_point("parse_intent")
 
 # entry routing
-workflow.add_conditional_edges("parse_intent", route_after_intent)
+workflow.add_conditional_edges("parse_intent", _route_after_intent)
 workflow.add_edge("conversational_reply", END)
 
 # cyclic loops and execution
-workflow.add_conditional_edges("execute_task", route_after_llm)
-workflow.add_conditional_edges("workspace_tools", route_after_execution)
-
+workflow.add_conditional_edges("execute_task", _route_after_llm)
+workflow.add_conditional_edges("workspace_tools", _route_after_execution)
 workflow.add_edge("force_tool_retry", "execute_task")
 
 workflow.add_edge("clarify", "human_clarify_node")
-workflow.add_conditional_edges("human_clarify_node", route_after_human_clarify)
+workflow.add_conditional_edges("human_clarify_node", _route_after_human_clarify)
 
 # Route into and out of the isolated subgraph
-workflow.add_conditional_edges("pull_request_subgraph", route_after_subgraph)
-workflow.add_conditional_edges("human_pr_node", route_after_human_pr)
+workflow.add_conditional_edges("pull_request_subgraph", _route_after_subgraph)
+workflow.add_conditional_edges("human_pr_node", _route_after_human_pr)
 
 workflow.add_edge("pr_merged", "update_memory")
-
 workflow.add_edge("update_memory", END)
 workflow.add_edge("cleanup_workflow", END)
 
 
 # ==========================================
-# Compilation & Checkpointer Attachment
+# 3. State Management & Compilation
 # ==========================================
-
 agent_store = InMemoryStore()
 
 # hydrate the store from disk to survive FastAPI/Docker restarts
@@ -324,10 +343,10 @@ if os.path.exists(PROFILE_PATH):
         print(f"Failed to hydrate LangGraph Store from disk: {e}")
 
 
-def get_checkpointer():
+def _get_checkpointer():
     """
-    Attempts to connect to the Redis container for persistent memory across webhooks.
-    Falls back to ephemeral MemorySaver if Redis is offline.
+    Attempts to connect to the Redis container for persistent memory across webhooks,
+    falling back to ephemeral MemorySaver.
     """
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     try:
@@ -345,7 +364,7 @@ def get_checkpointer():
 
 
 agent_app = workflow.compile(
-    checkpointer=get_checkpointer(),
+    checkpointer=_get_checkpointer(),
     store=agent_store,
     interrupt_before=["human_clarify_node", "human_pr_node"],
 )
