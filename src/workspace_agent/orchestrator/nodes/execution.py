@@ -94,7 +94,7 @@ def execute_task_node(  # noqa: PLR0911, PLR0915
 
     Exceptions:
     - Captures strict API rate limits and json truncation, yielding a safe conversational
-    `api_invocation_error` retry string.
+      `api_invocation_error` retry string.
     - Escalates hard routing failures natively via `TerminalEscalationError`.
     """
     config = config or {}
@@ -494,7 +494,7 @@ def workspace_tools_node(
 
     Exceptions:
     - Traps execution errors, runtime exceptions, and invalid JSON tools natively,
-    returning string-formatted tracebacks safely to the LLM.
+      returning string-formatted tracebacks safely to the LLM.
     """
     store = store or InMemoryStore()
     thread_id = config.get("configurable", {}).get("thread_id", "default") if config else "default"
@@ -626,10 +626,10 @@ def _post_process_tool_messages(
             if _is_tool_error(tool_name, res_str):
                 retries += 1
                 latest_err = res_str
-            else:
-                # It was an invalid tool call! Treat it as a hard error so retries increment
-                retries += 1
-                latest_err = str(msg.content)
+        else:
+            # It was an invalid tool call! Treat it as a hard error so retries increment
+            retries += 1
+            latest_err = str(msg.content)
 
     return clarify_q, disambig_opts, latest_err, retries
 
@@ -682,7 +682,7 @@ def force_tool_retry_node(state: AgentState) -> dict[str, Any]:
 
     Exceptions:
     - Implicitly handles non-compliant AI text responses during operational intents by
-    routing back to execution.
+      routing back to execution.
     """
     prompt = PromptManager.get("execution", "force_tool_retry").strip()
     return {
@@ -734,7 +734,7 @@ def update_memory_node(
 
     Exceptions:
     - Traps local extraction and schema failures silently. Returns cleanup instructions without
-    interrupting the user's core graph execution thread.
+      interrupting the user's core graph execution thread.
     """
     config = config or {}
     store = store or InMemoryStore()
