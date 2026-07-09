@@ -1,9 +1,12 @@
 import json
 import os
 import time
+from collections.abc import Sequence
+from typing import Any
 
 from langchain_core.messages import (
     AIMessage,
+    BaseMessage,
     HumanMessage,
     RemoveMessage,
     SystemMessage,
@@ -30,16 +33,25 @@ from src.workspace_agent.orchestrator.router import (
 from src.workspace_agent.tools.github import sync_repository
 from src.workspace_agent.tools.registry import agent_tools, execute_tool_call
 
+__all__ = [
+    "execute_task_node",
+    "workspace_tools_node",
+    "force_tool_retry_node",
+    "update_memory_node",
+]
+
+
 # ==========================================
-# Runtime Fallback Helper
+# Shared Module Utilities
 # ==========================================
 
 
-def _build_fallback_chain(llms: list, tools: list = None, structured_schema=None):
+def _build_fallback_chain(
+    llms: Sequence[Any], tools: Sequence[Any] | None = None, structured_schema: Any = None
+) -> Any:
     """
-    Constructs a resilient LCEL chain that automatically falls back to higher-tier models
-    if the primary model fails or times out.
-    Applies tools or structured schemas to ALL models in the sequence.
+    Constructs a resilient LCEL chain with automatic fallbacks for LLM execution.
+    Ensures tools and structured schemas are applied across all models in the failover sequence.
     """
     if not llms:
         raise ValueError("Cannot build fallback chain: No LLMs provided.")
@@ -63,8 +75,186 @@ def _build_fallback_chain(llms: list, tools: list = None, structured_schema=None
     return primary_chain
 
 
-def _check_circuit_breaker(messages: list) -> dict | None:
-    """Analyzes message history to prevent runaway tool loops."""
+# ==========================================
+# Task Execution Logic
+# ==========================================
+
+
+def execute_task_node(  # noqa: PLR0911, PLR0915
+    state: AgentState, config: RunnableConfig | None = None, store: BaseStore | None = None
+) -> dict[str, Any]:
+    """
+    The Core Workhorse Node.
+    Assembles hybrid context, injects the workspace map, and triggers the LLM.
+
+    Expected State Transitions:
+    - Appends responses to `messages`.
+    - Updates `modified_tex_files`, `execution_retry_count`, and `is_aborted`.
+    - Increments execution tier telemetry tracking (`t1_base_calls`, etc.).
+
+    Exceptions:
+    - Captures strict API rate limits and json truncation, yielding a safe conversational
+    `api_invocation_error` retry string.
+    - Escalates hard routing failures natively via `TerminalEscalationError`.
+    """
+    config = config or {}
+    store = store or InMemoryStore()
+
+    thread_id = config.get("configurable", {}).get("thread_id", "default")
+    user_id = config.get("configurable", {}).get("user_id", "default")
+
+    namespace = ("abort_signals", thread_id)
+    abort_item = store.get(namespace, "abort")
+
+    if abort_item:
+        store.delete(namespace, "abort")  # Acknowledge and clear the flag
+
+        return {
+            "messages": [
+                AIMessage(content="🛑 **Execution Paused:** I have halted my current task.")
+            ],
+            "clarification_question": (
+                "I stopped processing. Your branch and PR (if any) are perfectly safe.\n\n"
+                "• **To continue:** Just tell me what you want me to do next.\n"
+                "• **To abandon this task & delete the branch:** Type `/cleanup`"
+            ),
+            "latest_traceback_error": None,  # Ensure we don't trigger a retry loop
+        }
+
+    tier = _resolve_execution_tier(state)
+    requested_model = state.get("requested_model")
+
+    breaker_abort = _check_circuit_breaker(state.get("messages", []))
+    if breaker_abort:
+        return breaker_abort
+
+    target_ws = str(state.get("inferred_workspace", "None"))
+    target_path = str(state.get("workspace_absolute_path", "None"))
+    target_branch = str(state.get("target_branch", "main"))
+
+    # Sync check
+    sync_abort_state = _perform_sync_check(state, target_path, target_branch, target_ws)
+    if sync_abort_state:
+        return sync_abort_state
+
+    # Instantiate resilient fallback chain
+    try:
+        llms = get_execution_llm_sequence(requested_tier=tier, requested_model_key=requested_model)
+        execution_chain = _build_fallback_chain(llms, tools=agent_tools)
+    except TerminalEscalationError as e:
+        return {
+            "messages": [AIMessage(content=f"⚠️ **Escalation Failed:** {str(e)}")],
+            "is_aborted": True,
+        }
+
+    # Context assembly
+    messages = get_hybrid_context(
+        messages=state["messages"],
+        thread_id=thread_id,
+        user_id=user_id,
+        store=store,
+        config=config,
+        is_frontier_tier=(tier == TIER_FRONTIER),
+    )
+    cross_workspace_prompt = _build_cross_workspace_prompt(state, target_ws, target_path)
+
+    # Prevent context poisoning. Strip previous orchestrator success messages from the LLM's view.
+    # Otherwise, the LLM mimics these messages and hallucinates task completion
+    # without actually calling any tools.
+    filtered_messages = _filter_execution_context(messages)
+
+    if filtered_messages and isinstance(filtered_messages[0], SystemMessage):
+        filtered_messages[0] = SystemMessage(
+            content=(
+                str(filtered_messages[0].content) + "\n\n" + str(cross_workspace_prompt.content)
+            )
+        )
+    else:
+        filtered_messages.insert(0, cross_workspace_prompt)
+
+    # Grab the existing queue of latex files before attempting LLM invocation
+    new_tex_files = list(state.get("modified_tex_files", []))
+
+    # LLM execution & sanitization with API Resilience
+    try:
+        response = execution_chain.invoke(filtered_messages, config=config)
+    except Exception as e:
+        # Catch strict API rate limits, timeouts, or JSON truncation errors
+        retry_count = int(state.get("execution_retry_count", 0))
+        t1_calls, t2_calls, t3_calls = _calculate_telemetry(state, tier)
+
+        if retry_count >= settings.agent.max_sandbox_retries:
+            abort_msg = f"⚠️ **Execution Aborted:** Fatal API or Parsing Error -> {str(e)}"
+            return {
+                "messages": [AIMessage(content=abort_msg)],
+                "is_aborted": True,
+                "latest_traceback_error": None,
+                "modified_tex_files": new_tex_files,
+                "t1_base_calls": t1_calls,
+                "t2_standard_calls": t2_calls,
+                "t3_frontier_calls": t3_calls,
+            }
+
+        # Inject a system rejection so the graph waits and loops cleanly
+        recovery_msg = PromptManager.get(
+            "execution", "api_truncation_recovery", error_details=str(e)
+        ).strip()
+
+        # Sleep briefly to respect API rate limits/timeouts
+        time.sleep(3)
+
+        return {
+            "messages": [HumanMessage(content=recovery_msg)],
+            "latest_traceback_error": "api_invocation_error",
+            "execution_retry_count": retry_count + 1,
+            "modified_tex_files": new_tex_files,
+            "t1_base_calls": t1_calls,
+            "t2_standard_calls": t2_calls,
+            "t3_frontier_calls": t3_calls,
+        }
+
+    _sanitize_llm_response(response)
+
+    # Trap any newly modified .tex files from the successful response
+    new_tex_files = _extract_modified_tex_files(new_tex_files, response)
+
+    # Increment telemetry
+    t1_calls, t2_calls, t3_calls = _calculate_telemetry(state, tier)
+
+    # Return the AIMessage natively. The graph will decide if tools should execute.
+    return {
+        "messages": [response],
+        "modified_tex_files": new_tex_files,
+        "t1_base_calls": t1_calls,
+        "t2_standard_calls": t2_calls,
+        "t3_frontier_calls": t3_calls,
+        "latest_traceback_error": None,
+    }
+
+
+def _resolve_execution_tier(state: AgentState) -> int:
+    """
+    Determines the appropriate execution tier based on user-requested models and state flags.
+    Defaults to the base tier if no explicit constraints are present to save overhead.
+    """
+    requested_model = state.get("requested_model")
+    if requested_model:
+        inferred_tier = get_tier_for_model(str(requested_model))
+        if inferred_tier:
+            return inferred_tier
+
+    if state.get("force_frontier_tier"):
+        return TIER_FRONTIER
+    if state.get("force_standard_tier"):
+        return TIER_STANDARD
+    return TIER_BASE
+
+
+def _check_circuit_breaker(messages: list[BaseMessage]) -> dict[str, Any] | None:
+    """
+    Analyzes message history to detect and interrupt runaway autonomous tool execution loops.
+    Aborts the workflow and returns a terminal message state if the threshold is exceeded.
+    """
     consecutive_agent_steps = 0
     for msg in reversed(messages):
         if msg.type == "human":
@@ -88,20 +278,18 @@ def _check_circuit_breaker(messages: list) -> dict | None:
     return None
 
 
-# ==========================================
-# Task Execution Helpers
-# ==========================================
-
-
 def _perform_sync_check(
     state: AgentState, target_path: str, target_branch: str, target_ws: str
-) -> dict | None:
-    """Helper to verify and sync the target repository before execution."""
-    is_tool_loop = state.get("messages") and state["messages"][-1].type == "tool"
-    is_retry_loop = state.get("execution_retry_count", 0) > 0
+) -> dict[str, Any] | None:
+    """
+    Verifies and synchronizes the target repository branch prior to sandbox execution.
+    Skips the sync entirely if the agent is actively in a transient tool or error-recovery loop.
+    """
+    is_tool_loop = bool(state.get("messages") and state["messages"][-1].type == "tool")
+    is_retry_loop = int(state.get("execution_retry_count", 0)) > 0
 
     active_branch = state.get("active_agent_branch")
-    sync_target = active_branch if active_branch else target_branch
+    sync_target = str(active_branch) if active_branch else target_branch
 
     # Prevent sync if we are in the middle of a tool loop OR an error recovery loop
     if target_path and target_path != "None" and not is_tool_loop and not is_retry_loop:
@@ -121,7 +309,11 @@ def _perform_sync_check(
 def _build_cross_workspace_prompt(
     state: AgentState, target_ws: str, target_path: str
 ) -> SystemMessage:
-    """Helper to construct the strict workspace boundary prompt."""
+    """
+    Constructs a strict system prompt bounding the active intent category to specific
+    directory paths. Prevents the LLM from inadvertently hallucinating file modifications
+    outside registered domains.
+    """
     workspace_map = {name: ws.path for name, ws in settings.workspaces.items()}
 
     prompt = PromptManager.get(
@@ -141,96 +333,11 @@ def _build_cross_workspace_prompt(
     return SystemMessage(content=prompt)
 
 
-def _sanitize_llm_response(response: AIMessage) -> None:
-    """Helper to sanitize empty content to ensure multi-provider API compatibility."""
-    if isinstance(response.content, list):
-        # Deeply sanitize empty text blocks inside structural lists
-        cleaned_content = []
-        for part in response.content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                text_val = part.get("text", "").strip()
-                if text_val:
-                    cleaned_content.append(text_val)
-            elif isinstance(part, str):
-                if part.strip():
-                    cleaned_content.append(part.strip())
-
-        response.content = "\n".join(cleaned_content)
-
-    # Do not forcefully inject "Executing tools..." or "Task complete."
-    # Modern LLM frameworks handle empty string contents gracefully,
-    # and injecting generic text causes smaller models to overfit and
-    # hallucinate the text instead of triggering the actual tool API.
-    if response.content is None:
-        response.content = ""
-
-
-def _resolve_execution_tier(state: AgentState) -> int:
-    """Helper to determine the execution tier based on state flags."""
-    requested_model = state.get("requested_model")
-    if requested_model:
-        inferred_tier = get_tier_for_model(requested_model)
-        if inferred_tier:
-            return inferred_tier
-
-    if state.get("force_frontier_tier"):
-        return TIER_FRONTIER
-    if state.get("force_standard_tier"):
-        return TIER_STANDARD
-    return TIER_BASE
-
-
-def _extract_modified_tex_files(current_files: list[str], response: AIMessage) -> list[str]:
+def _filter_execution_context(messages: list[BaseMessage]) -> list[BaseMessage]:
     """
-    Helper to trap newly modified .tex files from tool calls and clean up deleted/renamed paths.
-    """
-    new_files = list(current_files)
-    if getattr(response, "tool_calls", None):
-        for tc in response.tool_calls:
-            tool_name = tc.get("name")
-            args = tc.get("args", {})
-
-            # 1. Handle file modifications/creations
-            if tool_name in ["write_file", "search_and_replace", "replace_text_block"]:
-                fpath = str(args.get("file_path", ""))
-                if fpath.lower().endswith(".tex") and fpath not in new_files:
-                    new_files.append(fpath)
-
-            # 2. Handle file deletions
-            elif tool_name == "delete_file":
-                fpath = str(args.get("file_path", ""))
-                if fpath in new_files:
-                    new_files.remove(fpath)
-
-            # 3. Handle file renames
-            elif tool_name == "rename_file":
-                source_path = str(args.get("source_path", ""))
-                dest_path = str(args.get("destination_path", ""))
-
-                # Remove the old path if it was queued
-                if source_path in new_files:
-                    new_files.remove(source_path)
-
-                # Add the new path if it is a .tex file
-                if dest_path.lower().endswith(".tex") and dest_path not in new_files:
-                    new_files.append(dest_path)
-
-    return new_files
-
-
-def _calculate_telemetry(state: AgentState, tier: int) -> tuple[int, int, int]:
-    """Helper to increment tier telemetry."""
-    return (
-        state.get("t1_base_calls", 0) + (1 if tier == TIER_BASE else 0),
-        state.get("t2_standard_calls", 0) + (1 if tier == TIER_STANDARD else 0),
-        state.get("t3_frontier_calls", 0) + (1 if tier == TIER_FRONTIER else 0),
-    )
-
-
-def _filter_execution_context(messages: list) -> list:
-    """
-    Helper to strip orchestrator success markers and past hallucinated summaries,
-    replacing them with safe boundary markers to prevent context pollution.
+    Sanitizes the execution context by stripping past orchestrator success markers and
+    unsupported summary strings. This isolation prevents the LLM from mimicking previous
+    success states and halting prematurely.
     """
     filtered_messages = []
 
@@ -286,212 +393,108 @@ def _filter_execution_context(messages: list) -> list:
     return filtered_messages
 
 
-def execute_task_node(  # noqa: PLR0911, PLR0915
-    state: AgentState, config: RunnableConfig = None, store: BaseStore = None
-) -> dict:
+def _calculate_telemetry(state: AgentState, tier: int) -> tuple[int, int, int]:
     """
-    The Core Workhorse Node.
-    Assembles hybrid context, injects the workspace map, and triggers the LLM.
+    Computes updated LLM invocation counts for telemetry tracking across infrastructure tiers.
+    Ensures usage bounds and metrics remain perfectly accurate during transient fallback
+    or retry loops.
     """
-    config = config or {}
-    store = store or InMemoryStore()
-
-    thread_id = config.get("configurable", {}).get("thread_id", "default")
-    user_id = config.get("configurable", {}).get("user_id", "default")
-
-    namespace = ("abort_signals", thread_id)
-    abort_item = store.get(namespace, "abort")
-
-    if abort_item:
-        store.delete(namespace, "abort")  # Acknowledge and clear the flag
-
-        return {
-            "messages": [
-                AIMessage(content="🛑 **Execution Paused:** I have halted my current task.")
-            ],
-            "clarification_question": (
-                "I stopped processing. Your branch and PR (if any) are perfectly safe.\n\n"
-                "• **To continue:** Just tell me what you want me to do next.\n"
-                "• **To abandon this task & delete the branch:** Type `/cleanup`"
-            ),
-            "latest_traceback_error": None,  # Ensure we don't trigger a retry loop
-        }
-
-    tier = _resolve_execution_tier(state)
-    requested_model = state.get("requested_model")
-
-    breaker_abort = _check_circuit_breaker(state.get("messages", []))
-    if breaker_abort:
-        return breaker_abort
-
-    target_ws = state.get("inferred_workspace", "None")
-    target_path = state.get("workspace_absolute_path", "None")
-    target_branch = state.get("target_branch", "main")
-
-    # Sync check
-    sync_abort_state = _perform_sync_check(state, target_path, target_branch, target_ws)
-    if sync_abort_state:
-        return sync_abort_state
-
-    # Instantiate resilient fallback chain
-    try:
-        llms = get_execution_llm_sequence(requested_tier=tier, requested_model_key=requested_model)
-        execution_chain = _build_fallback_chain(llms, tools=agent_tools)
-    except TerminalEscalationError as e:
-        return {
-            "messages": [AIMessage(content=f"⚠️ **Escalation Failed:** {str(e)}")],
-            "is_aborted": True,
-        }
-
-    # Context assembly
-    messages = get_hybrid_context(
-        messages=state["messages"],
-        thread_id=thread_id,
-        user_id=user_id,
-        store=store,
-        config=config,
-        is_frontier_tier=(tier == TIER_FRONTIER),
+    return (
+        int(state.get("t1_base_calls", 0)) + (1 if tier == TIER_BASE else 0),
+        int(state.get("t2_standard_calls", 0)) + (1 if tier == TIER_STANDARD else 0),
+        int(state.get("t3_frontier_calls", 0)) + (1 if tier == TIER_FRONTIER else 0),
     )
-    cross_workspace_prompt = _build_cross_workspace_prompt(state, target_ws, target_path)
-
-    # Prevent context poisoning. Strip previous orchestrator success messages from the LLM's view.
-    # Otherwise, the LLM mimics these messages and hallucinates task completion
-    # without actually calling any tools.
-    filtered_messages = _filter_execution_context(messages)
-
-    if filtered_messages and isinstance(filtered_messages[0], SystemMessage):
-        filtered_messages[0] = SystemMessage(
-            content=filtered_messages[0].content + "\n\n" + cross_workspace_prompt.content
-        )
-    else:
-        filtered_messages.insert(0, cross_workspace_prompt)
-
-    # Grab the existing queue of latex files before attempting LLM invocation
-    new_tex_files = list(state.get("modified_tex_files", []))
-
-    # LLM execution & sanitization with API Resilience
-    try:
-        response = execution_chain.invoke(filtered_messages, config=config)
-    except Exception as e:
-        # Catch strict API rate limits, timeouts, or JSON truncation errors
-        retry_count = state.get("execution_retry_count", 0)
-        t1_calls, t2_calls, t3_calls = _calculate_telemetry(state, tier)
-
-        if retry_count >= settings.agent.max_sandbox_retries:
-            abort_msg = f"⚠️ **Execution Aborted:** Fatal API or Parsing Error -> {str(e)}"
-            return {
-                "messages": [AIMessage(content=abort_msg)],
-                "is_aborted": True,
-                "latest_traceback_error": None,
-                "modified_tex_files": new_tex_files,
-                "t1_base_calls": t1_calls,
-                "t2_standard_calls": t2_calls,
-                "t3_frontier_calls": t3_calls,
-            }
-
-        # Inject a system rejection so the graph waits and loops cleanly
-        recovery_msg = PromptManager.get(
-            "execution", "api_truncation_recovery", error_details=str(e)
-        ).strip()
-
-        # Sleep briefly to respect API rate limits/timeouts
-        time.sleep(3)
-
-        return {
-            "messages": [HumanMessage(content=recovery_msg)],
-            "latest_traceback_error": "api_invocation_error",
-            "execution_retry_count": retry_count + 1,
-            "modified_tex_files": new_tex_files,
-            "t1_base_calls": t1_calls,
-            "t2_standard_calls": t2_calls,
-            "t3_frontier_calls": t3_calls,
-        }
-
-    _sanitize_llm_response(response)
-
-    # Trap any newly modified .tex files from the successful response
-    new_tex_files = _extract_modified_tex_files(new_tex_files, response)
-
-    # Increment telemetry
-    t1_calls, t2_calls, t3_calls = _calculate_telemetry(state, tier)
-
-    # Return the AIMessage natively. The graph will decide if tools should execute.
-    return {
-        "messages": [response],
-        "modified_tex_files": new_tex_files,
-        "t1_base_calls": t1_calls,
-        "t2_standard_calls": t2_calls,
-        "t3_frontier_calls": t3_calls,
-        "latest_traceback_error": None,
-    }
 
 
-def _is_tool_error(tool_name: str, res_str: str) -> bool:
-    """Helper to evaluate if a tool execution result constitutes a hard error."""
-    # 1. Hard Invocation Errors
-    if res_str.startswith("Tool execution failed:") or res_str.startswith("Error: Tool"):
-        return True
+def _sanitize_llm_response(response: AIMessage) -> None:
+    """
+    Cleans empty text blocks from structural LLM responses to ensure multi-provider API
+    compatibility. Explicitly avoids injecting generic text to prevent small models from
+    overfitting and hallucinating.
+    """
+    if isinstance(response.content, list):
+        # Deeply sanitize empty text blocks inside structural lists
+        cleaned_content = []
+        for part in response.content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text_val = part.get("text", "").strip()
+                if text_val:
+                    cleaned_content.append(text_val)
+            elif isinstance(part, str):
+                if part.strip():
+                    cleaned_content.append(part.strip())
 
-    # 2. Execution & Sandbox Tools
-    if tool_name in ["run_python_script", "run_pytest", "compile_latex_document"]:
-        sandbox_signatures = [
-            "Traceback (most recent call last):",
-            "=== ERROR",
-            "System Error:",
-            "Execution Failed",
-            "FAILED",
-        ]
-        if res_str.startswith("Error:") or any(sig in res_str for sig in sandbox_signatures):
-            return True
+        response.content = "\n".join(cleaned_content)
 
-    # 3. Read, Write, and OS Tools
-    elif (
-        res_str.startswith("Error:")
-        or res_str.startswith("Failed:")
-        or res_str.startswith("Security Exception:")
-    ):
-        return True
-
-    return False
+    # Do not forcefully inject "Executing tools..." or "Task complete."
+    # Modern LLM frameworks handle empty string contents gracefully,
+    # and injecting generic text causes smaller models to overfit and
+    # hallucinate the text instead of triggering the actual tool API.
+    if response.content is None:
+        response.content = ""
 
 
-def _post_process_tool_messages(
-    new_msgs: list, tool_calls: list, initial_retries: int
-) -> tuple[str | None, list | None, str | None, int]:
-    """Helper to extract business logic and error states from executed tools."""
-    clarify_q = None
-    disambig_opts = None
-    latest_err = None
-    retries = initial_retries
+def _extract_modified_tex_files(current_files: list[str], response: AIMessage) -> list[str]:
+    """
+    Traps newly modified or created .tex files from successful tool calls for compiler
+    post-processing. Evaluates deletions and renames directly to maintain an accurate
+    internal cache of active documents.
+    """
+    new_files = list(current_files)
+    if getattr(response, "tool_calls", None):
+        for tc in response.tool_calls:
+            tool_name = tc.get("name")
+            args = tc.get("args", {})
 
-    for msg in new_msgs:
-        tc = next((t for t in tool_calls if t["id"] == msg.tool_call_id), None)
-        if tc:
-            tool_name = tc["name"]
-            if tool_name == "ask_user_for_clarification":
-                clarify_q = tc["args"].get("question")
-                disambig_opts = tc["args"].get("options")
-                continue
+            # 1. Handle file modifications/creations
+            if tool_name in ["write_file", "search_and_replace", "replace_text_block"]:
+                fpath = str(args.get("file_path", ""))
+                if fpath.lower().endswith(".tex") and fpath not in new_files:
+                    new_files.append(fpath)
 
-            res_str = str(msg.content)
-            if _is_tool_error(tool_name, res_str):
-                retries += 1
-                latest_err = res_str
-        else:
-            # It was an invalid tool call! Treat it as a hard error so retries increment
-            retries += 1
-            latest_err = str(msg.content)
+            # 2. Handle file deletions
+            elif tool_name == "delete_file":
+                fpath = str(args.get("file_path", ""))
+                if fpath in new_files:
+                    new_files.remove(fpath)
 
-    return clarify_q, disambig_opts, latest_err, retries
+            # 3. Handle file renames
+            elif tool_name == "rename_file":
+                source_path = str(args.get("source_path", ""))
+                dest_path = str(args.get("destination_path", ""))
+
+                # Remove the old path if it was queued
+                if source_path in new_files:
+                    new_files.remove(source_path)
+
+                # Add the new path if it is a .tex file
+                if dest_path.lower().endswith(".tex") and dest_path not in new_files:
+                    new_files.append(dest_path)
+
+    return new_files
+
+
+# ==========================================
+# Tool Execution Logic
+# ==========================================
 
 
 def workspace_tools_node(
-    state: AgentState, config: RunnableConfig = None, store: BaseStore = None
-) -> dict:
+    state: AgentState, config: RunnableConfig | None = None, store: BaseStore | None = None
+) -> dict[str, Any]:
     """
     Custom node to natively execute tools sequentially.
     File system agents MUST execute tools sequentially to prevent race conditions
     when multiple tools attempt to edit the same file simultaneously.
+
+    Expected State Transitions:
+    - Appends sequential `ToolMessage` instances to `messages`.
+    - Updates `execution_retry_count`, `latest_traceback_error`, and `clarification_question`.
+    - Updates `is_aborted` if tool execution loops continuously fail beyond limits.
+
+    Exceptions:
+    - Traps execution errors, runtime exceptions, and invalid JSON tools natively,
+    returning string-formatted tracebacks safely to the LLM.
     """
     store = store or InMemoryStore()
     thread_id = config.get("configurable", {}).get("thread_id", "default") if config else "default"
@@ -547,7 +550,7 @@ def workspace_tools_node(
         )
 
     # 3. Extract context and post-process tool messages
-    retries = state.get("execution_retry_count", 0)
+    retries = int(state.get("execution_retry_count", 0))
     clarify_q, disambig_opts, latest_err, retries = _post_process_tool_messages(
         new_msgs, tool_calls, retries
     )
@@ -556,7 +559,7 @@ def workspace_tools_node(
     if any(tc.get("name") == "mark_task_already_completed" for tc in tool_calls):
         return {
             "messages": new_msgs,
-            "execution_retry_count": state.get("execution_retry_count", 0),
+            "execution_retry_count": int(state.get("execution_retry_count", 0)),
             "latest_traceback_error": None,
         }
 
@@ -597,15 +600,94 @@ def workspace_tools_node(
     }
 
 
-def force_tool_retry_node(state: AgentState) -> dict:
+def _post_process_tool_messages(
+    new_msgs: list[BaseMessage], tool_calls: list[dict[str, Any]], initial_retries: int
+) -> tuple[str | None, list[str] | None, str | None, int]:
     """
-    Appends a system message forcing the LLM to emit a tool call
-    when it mistakenly replies with plain text during an operation intent.
+    Extracts business logic outputs, user clarifications, and error states from executed
+    sandbox tools. Increments the retry counter dynamically if hard invocation failures
+    or syntax errors are detected natively.
+    """
+    clarify_q = None
+    disambig_opts = None
+    latest_err = None
+    retries = initial_retries
+
+    for msg in new_msgs:
+        tc = next((t for t in tool_calls if t["id"] == getattr(msg, "tool_call_id", "")), None)
+        if tc:
+            tool_name = tc["name"]
+            if tool_name == "ask_user_for_clarification":
+                clarify_q = tc["args"].get("question")
+                disambig_opts = tc["args"].get("options")
+                continue
+
+            res_str = str(msg.content)
+            if _is_tool_error(tool_name, res_str):
+                retries += 1
+                latest_err = res_str
+            else:
+                # It was an invalid tool call! Treat it as a hard error so retries increment
+                retries += 1
+                latest_err = str(msg.content)
+
+    return clarify_q, disambig_opts, latest_err, retries
+
+
+def _is_tool_error(tool_name: str, res_str: str) -> bool:
+    """
+    Evaluates specific tool outputs to determine if the resulting string constitutes a
+    hard system error. Traps known sandbox signatures, runtime tracebacks, and OS-level
+    failure strings dynamically.
+    """
+    # 1. Hard Invocation Errors
+    if res_str.startswith("Tool execution failed:") or res_str.startswith("Error: Tool"):
+        return True
+
+    # 2. Execution & Sandbox Tools
+    if tool_name in ["run_python_script", "run_pytest", "compile_latex_document"]:
+        sandbox_signatures = [
+            "Traceback (most recent call last):",
+            "=== ERROR",
+            "System Error:",
+            "Execution Failed",
+            "FAILED",
+        ]
+        if res_str.startswith("Error:") or any(sig in res_str for sig in sandbox_signatures):
+            return True
+
+    # 3. Read, Write, and OS Tools
+    elif (
+        res_str.startswith("Error:")
+        or res_str.startswith("Failed:")
+        or res_str.startswith("Security Exception:")
+    ):
+        return True
+
+    return False
+
+
+# ==========================================
+# Error Recovery Routing
+# ==========================================
+
+
+def force_tool_retry_node(state: AgentState) -> dict[str, Any]:
+    """
+    Appends a system message forcing the LLM to emit a tool call.
+
+    Expected State Transitions:
+    - Appends a localized `SystemMessage` prompt directly to `messages`.
+    - Bumps `execution_retry_count` by 1.
+
+    Exceptions:
+    - Implicitly handles non-compliant AI text responses during operational intents by
+    routing back to execution.
     """
     prompt = PromptManager.get("execution", "force_tool_retry").strip()
     return {
         "messages": [SystemMessage(content=prompt)],
-        "execution_retry_count": state.get("execution_retry_count", 0) + 1,
+        "execution_retry_count": int(state.get("execution_retry_count", 0)) + 1,
     }
 
 
@@ -639,11 +721,20 @@ class MemoryExtraction(BaseModel):
 
 
 def update_memory_node(
-    state: AgentState, config: RunnableConfig = None, store: BaseStore = None
-) -> dict:
+    state: AgentState, config: RunnableConfig | None = None, store: BaseStore | None = None
+) -> dict[str, Any]:
     """
-    Asynchronous Memory extraction.
+    Asynchronous Memory extraction node.
     Writes structured facts to the LangGraph Store and embeds operational insights into ChromaDB.
+
+    Expected State Transitions:
+    - Consumes recent conversational context without mutating it.
+    - Yields `RemoveMessage` objects to actively prune transient artifacts from `messages`.
+    - Updates execution tier telemetry tracking (`t1_base_calls`).
+
+    Exceptions:
+    - Traps local extraction and schema failures silently. Returns cleanup instructions without
+    interrupting the user's core graph execution thread.
     """
     config = config or {}
     store = store or InMemoryStore()
@@ -724,14 +815,14 @@ def update_memory_node(
                 )
 
         return {
-            "t1_base_calls": state.get("t1_base_calls", 0) + 1,
+            "t1_base_calls": int(state.get("t1_base_calls", 0)) + 1,
             "messages": messages_to_remove,
             "is_busy": False,
         }
     except Exception as e:
         print(f"Memory extraction failed: {e}")
         return {
-            "t1_base_calls": state.get("t1_base_calls", 0) + 1,
+            "t1_base_calls": int(state.get("t1_base_calls", 0)) + 1,
             "messages": messages_to_remove,
             "is_busy": False,
         }
