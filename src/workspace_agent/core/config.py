@@ -8,12 +8,32 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from src.workspace_agent.core.provider import Provider
 
+__all__ = [
+    "OrchestrationConfig",
+    "CISuiteConfig",
+    "WorkspaceConfig",
+    "ModelDefinition",
+    "TierConfig",
+    "LLMConfig",
+    "WorkspaceAgentConfig",
+    "load_configuration",
+    "validate_environment_secrets",
+    "settings",
+]
+
 # resolve paths up to the repository root
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
 
 
+# ==========================================
+# Configuration Schemas
+# ==========================================
+
+
 class OrchestrationConfig(BaseModel):
+    """Configuration for agent orchestration limits, defaults, and ChatOps settings."""
+
     target_branch: str = Field(
         default="main", description="The default Git branch for agent operations."
     )
@@ -55,6 +75,8 @@ class OrchestrationConfig(BaseModel):
 
 
 class CISuiteConfig(BaseModel):
+    """Configuration definition for a specific Agentic CI/CD test suite."""
+
     name: str = Field(..., description="Display name for the GitHub Status Check context.")
     command: str = Field(..., description="The strictly whitelisted shell command to execute.")
     timeout_seconds: int = Field(
@@ -63,6 +85,8 @@ class CISuiteConfig(BaseModel):
 
 
 class WorkspaceConfig(BaseModel):
+    """Configuration overrides and specific checks assigned to a single managed workspace."""
+
     description: str = Field(..., min_length=10)
     path: str = Field(...)
     target_branch: str | None = Field(default=None, description="Overrides global target_branch")
@@ -80,17 +104,24 @@ class WorkspaceConfig(BaseModel):
 
 
 class ModelDefinition(BaseModel):
+    """Maps a specific LLM model identifier to its executing provider."""
+
     provider: Provider
     model_name: str = Field(description="The exact string expected by the provider API")
 
 
 class TierConfig(BaseModel):
+    """Defines a tiered grouping of available models (e.g., base, standard, frontier)."""
+
     default_model: str
     available_models: dict[str, ModelDefinition]
 
     @field_validator("available_models")
     @classmethod
-    def validate_telegram_safe_keys(cls, v):
+    def _validate_telegram_safe_keys(
+        cls, v: dict[str, ModelDefinition]
+    ) -> dict[str, ModelDefinition]:
+        """Ensures all model dictionary keys strictly conform to Telegram-safe formatting."""
         for key in v.keys():
             if not re.match(r"^[a-zA-Z0-9_]+$", key):
                 raise ValueError(
@@ -101,12 +132,16 @@ class TierConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
+    """Consolidated configuration mapping tiers to their respective models."""
+
     base_tier: TierConfig
     standard_tier: TierConfig
     frontier_tier: TierConfig
 
 
 class WorkspaceAgentConfig(BaseModel):
+    """The root configuration object holding the complete operational state of the agent."""
+
     agent: OrchestrationConfig = Field(default_factory=OrchestrationConfig)
     llm: LLMConfig
     # enforce that at least one path is whitelisted for the sandbox
@@ -114,11 +149,22 @@ class WorkspaceAgentConfig(BaseModel):
     workspaces: dict[str, WorkspaceConfig]
 
 
+# ==========================================
+# Initialization & Validation Logic
+# ==========================================
+
+
 def load_configuration() -> WorkspaceAgentConfig:
     """
-    Loads and validates the YAML configuration.
-    Requires a live config.yaml to be present to prevent the daemon from booting
-    with invalid dummy paths from the example template.
+    Loads and validates the YAML configuration schema.
+
+    State Transitions:
+    - Ingests data from `config.yaml` or the environment's config path override.
+    - Mutates `allowed_paths` directly if the `ALLOWED_PATHS` environment variable is provided.
+
+    Exceptions:
+    - Triggers sys.exit(1) if the file is missing, contains malformed YAML,
+      or fails schema validation.
     """
     config_path = os.getenv("WORKSPACE_AGENT_CONFIG_PATH") or os.path.join(
         PROJECT_ROOT, "config.yaml"
@@ -157,12 +203,18 @@ def load_configuration() -> WorkspaceAgentConfig:
         sys.exit(1)
 
 
-def validate_environment_secrets(config: WorkspaceAgentConfig):
+def validate_environment_secrets(config: WorkspaceAgentConfig) -> None:
     """
-    Cross-references the active YAML configuration with the environment variables
-    to ensure all required secrets are present before the application boots.
+    Cross-references the active YAML configuration with system environment variables.
+
+    State Transitions:
+    - Scans for required core integrations and dynamically computes required LLM keys.
+
+    Exceptions:
+    - Triggers sys.exit(1) and aborts the boot sequence if any referenced integration
+      lacks a secret key.
     """
-    missing_secrets = []
+    missing_secrets: list[str] = []
 
     # 1. Core Application Integrations
     core_secrets = [
@@ -178,28 +230,9 @@ def validate_environment_secrets(config: WorkspaceAgentConfig):
             missing_secrets.append(secret)
 
     # 2. Dynamic LLM Providers (Only ask for keys of models actually configured)
-    def _check_provider_key(tier_config: TierConfig):
-        model_def = tier_config.available_models.get(tier_config.default_model)
-        if model_def:
-            # Handle enum string value or raw string depending on how Provider is defined
-            provider_val = getattr(model_def.provider, "value", str(model_def.provider)).lower()
-
-            provider_keys = {
-                "openai": "OPENAI_API_KEY",
-                "deepseek": "DEEPSEEK_API_KEY",
-                "anthropic": "ANTHROPIC_API_KEY",
-                "gemini": "GEMINI_API_KEY",
-                "ollama": None,  # No key required for local execution
-            }
-
-            expected_key = provider_keys.get(provider_val)
-            if expected_key and not os.getenv(expected_key):
-                missing_secrets.append(expected_key)
-
-    # Check all tiers for their default models
-    _check_provider_key(config.llm.base_tier)
-    _check_provider_key(config.llm.standard_tier)
-    _check_provider_key(config.llm.frontier_tier)
+    _check_provider_key(config.llm.base_tier, missing_secrets)
+    _check_provider_key(config.llm.standard_tier, missing_secrets)
+    _check_provider_key(config.llm.frontier_tier, missing_secrets)
 
     # 3. Fast-Fail if anything is missing
     if missing_secrets:
@@ -216,11 +249,38 @@ def validate_environment_secrets(config: WorkspaceAgentConfig):
         sys.exit(1)
 
 
+def _check_provider_key(tier_config: TierConfig, missing_secrets: list[str]) -> None:
+    """
+    Inspects a specific model tier to determine if its default provider requires an API key,
+    appending any missing keys to the tracking array.
+    """
+    model_def = tier_config.available_models.get(tier_config.default_model)
+    if model_def:
+        # Handle enum string value or raw string depending on how Provider is defined
+        provider_val = getattr(model_def.provider, "value", str(model_def.provider)).lower()
+
+        provider_keys = {
+            "openai": "OPENAI_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+            "ollama": None,  # No key required for local execution
+        }
+
+        expected_key = provider_keys.get(provider_val)
+        if expected_key and not os.getenv(expected_key):
+            missing_secrets.append(expected_key)
+
+
+# ==========================================
+# Boot Sequence Execution
+# ==========================================
+
 # Load the .env file early so os.getenv works during instantiation
 load_dotenv()
 
-# instantiate the singleton so other modules can import `settings`
-settings = load_configuration()
+# Instantiate the singleton so other modules can import `settings`
+settings: WorkspaceAgentConfig = load_configuration()
 
 # Validate the environment immediately after loading the YAML config,
 # UNLESS we are running automated tests.
