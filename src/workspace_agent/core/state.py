@@ -1,10 +1,27 @@
+"""LangGraph state schemas for the Workspace Agent and PR sub-graph execution loops."""
+
 from typing import Annotated, Literal, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
+__all__ = ["AgentState", "PRState"]
+
+
+# ==========================================
+# Primary Agent State Schema
+# ==========================================
+
 
 class AgentState(TypedDict):
+    """Global state schema for the primary Workspace Agent workflow graph.
+
+    This state is persisted across execution loops and passed between routing,
+    execution, tool-calling, and evaluation nodes. It tracks conversation
+    memory, routing decisions, execution retries, observability metrics, and
+    Git lifecycle status.
+    """
+
     # 1. Core Conversation Memory
     # The 'add_messages' reducer intelligently appends new messages,
     # OR overwrites existing messages if their IDs match.
@@ -41,8 +58,19 @@ class AgentState(TypedDict):
     human_approved: bool
 
 
+# ==========================================
+# PR Sub-Graph State Schema
+# ==========================================
+
+
 class PRState(TypedDict):
-    """Bounded context for the PR Sub-Graph."""
+    """Bounded state schema for the Pull Request (PR) review and CI/CD sub-graph.
+
+    This state is used during automated PR creation, diff evaluation, and
+    webhook-triggered CI checks. It isolates git lifecycle tracking and CI/CD
+    results while inheriting core conversation memory and telemetry from the
+    parent execution loop.
+    """
 
     messages: Annotated[list[BaseMessage], add_messages]
     workspace_absolute_path: str | None
