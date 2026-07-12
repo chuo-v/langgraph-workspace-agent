@@ -11,75 +11,18 @@ logger = logging.getLogger(__name__)
 # We set the chunking threshold slightly lower to leave room for safety margins.
 MAX_MESSAGE_LENGTH = 4000
 
+__all__ = ["send_telegram_message"]
 
-def _convert_markdown_to_telegram_html(text: str) -> str:
+# ==========================================
+# Telegram Message Delivery
+# ==========================================
+
+
+def send_telegram_message(chat_id: str, text: str) -> None:
     """
-    Converts basic Markdown to Telegram-safe HTML.
-    Telegram's HTML parser is immune to the stray underscore/asterisk crashes
-    that plague its legacy Markdown parser.
-    """
-    # 1. Escape HTML entities to prevent unintended tag parsing (e.g. <, >, & in code)
-    text = html.escape(text)
-
-    # 2. Convert multi-line code blocks: ```language\ncode\n``` -> <pre>code</pre>
-    # We use string multiplication ("`" * 3) to prevent UI markdown rendering issues
-    code_block_pattern = "`" * 3 + r"(?:[a-zA-Z0-9\-]+)?\n(.*?)" + "`" * 3
-    text = re.sub(
-        code_block_pattern,
-        r"<pre>\1</pre>",
-        text,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-
-    # 3. Convert inline code: `code` -> <code>code</code>
-    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
-
-    # 4. Convert bold: **text** -> <b>text</b>
-    text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
-
-    # 5. Convert italics: *text* -> <i>text</i>
-    # Using negative lookbehinds to avoid matching the asterisks in bold tags
-    text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", text)
-
-    # 6. Convert links: [text](url) -> <a href="url">text</a>
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
-
-    return text
-
-
-def _chunk_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
-    """
-    Splits a long message into chunks that fit within Telegram's character limits.
-    Attempts to break cleanly at paragraph boundaries, then newlines, then spaces.
-    """
-    if len(text) <= max_length:
-        return [text]
-
-    chunks = []
-    while text:
-        if len(text) <= max_length:
-            chunks.append(text)
-            break
-
-        # Attempt to find a graceful breaking point
-        split_at = text.rfind("\n\n", 0, max_length)
-        if split_at == -1:
-            split_at = text.rfind("\n", 0, max_length)
-        if split_at == -1:
-            split_at = text.rfind(" ", 0, max_length)
-        if split_at == -1:
-            split_at = max_length  # Hard split if it's a massive unbroken block
-
-        chunks.append(text[:split_at].strip())
-        text = text[split_at:].strip()
-
-    return chunks
-
-
-def send_telegram_message(chat_id: str, text: str):
-    """
-    Encapsulates raw communication with the Telegram Bot API.
-    Handles message chunking and automatic formatting fallbacks to ensure delivery.
+    Encapsulates raw communication with the Telegram Bot API, delivering messages to a specified
+    chat. Handles message chunking and automatic plain-text fallbacks if HTML formatting fails;
+    network and HTTP errors are caught and logged locally without raising exceptions.
     """
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not bot_token:
@@ -128,3 +71,67 @@ def send_telegram_message(chat_id: str, text: str):
 
         except Exception as e:
             logger.error(f"Network error sending to Telegram: {e}")
+
+
+def _chunk_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
+    """
+    Splits a long message into chunks that fit within Telegram's character limits.
+    Attempts to break cleanly at paragraph boundaries, then newlines, then spaces.
+    """
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    while text:
+        if len(text) <= max_length:
+            chunks.append(text)
+            break
+
+        # Attempt to find a graceful breaking point
+        split_at = text.rfind("\n\n", 0, max_length)
+        if split_at == -1:
+            split_at = text.rfind("\n", 0, max_length)
+        if split_at == -1:
+            split_at = text.rfind(" ", 0, max_length)
+        if split_at == -1:
+            split_at = max_length  # Hard split if it's a massive unbroken block
+
+        chunks.append(text[:split_at].strip())
+        text = text[split_at:].strip()
+
+    return chunks
+
+
+def _convert_markdown_to_telegram_html(text: str) -> str:
+    """
+    Converts basic Markdown to Telegram-safe HTML.
+    Telegram's HTML parser is immune to the stray underscore/asterisk crashes
+    that plague its legacy Markdown parser.
+    """
+    # 1. Escape HTML entities to prevent unintended tag parsing (e.g. <, >, & in code)
+    text = html.escape(text)
+
+    # 2. Convert multi-line code blocks: ```language\ncode\n``` -> <pre>code</pre>
+    # We use string multiplication ("`" * 3) to prevent UI markdown rendering issues
+    code_block_pattern = "`" * 3 + r"(?:[a-zA-Z0-9\-]+)?\n(.*?)" + "`" * 3
+    text = re.sub(
+        code_block_pattern,
+        r"<pre>\1</pre>",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # 3. Convert inline code: `code` -> <code>code</code>
+    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+
+    # 4. Convert bold: **text** -> <b>text</b>
+    text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
+
+    # 5. Convert italics: *text* -> <i>text</i>
+    # Using negative lookbehinds to avoid matching the asterisks in bold tags
+    text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", text)
+
+    # 6. Convert links: [text](url) -> <a href="url">text</a>
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+
+    return text
