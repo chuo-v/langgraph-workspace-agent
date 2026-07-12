@@ -2,6 +2,28 @@ import ast
 import os
 from pathlib import Path
 
+__all__ = [
+    "get_allowed_paths",
+    "secure_resolve_path",
+    "write_file",
+    "search_and_replace",
+    "replace_text_block",
+    "search_workspace",
+    "read_files",
+    "get_workspace_tree",
+    "get_code_skeleton",
+    "read_file_section",
+    "grep_workspace",
+    "rename_file",
+    "delete_file",
+]
+
+# ==========================================
+# Filesystem Tools
+# ==========================================
+
+# === Security & Path Resolution ===
+
 
 def get_allowed_paths() -> list[str]:
     """
@@ -61,9 +83,7 @@ def secure_resolve_path(requested_path: str | Path, allowed_paths: list[str | Pa
     )
 
 
-# ==========================================
-# Core Filesystem Functions (Native Tools)
-# ==========================================
+# === Core Filesystem Functions (Native Tools) ===
 
 
 def write_file(file_path: str, content: str) -> str:
@@ -208,9 +228,7 @@ def search_workspace(pattern: str, directory: str = "") -> str:
         return f"Error searching workspace: {str(e)}"
 
 
-# ==========================================
-# Batch Operations
-# ==========================================
+# === Batch Operations ===
 
 
 def read_files(file_paths: list[str]) -> str:
@@ -249,9 +267,7 @@ def read_files(file_paths: list[str]) -> str:
         return f"Error executing batch read: {str(e)}"
 
 
-# ==========================================
-# Context-Optimized Reading Tools
-# ==========================================
+# === Context-Optimized Reading Tools ===
 
 
 def get_workspace_tree(directory: str = "", max_depth: int = 3) -> str:
@@ -309,6 +325,28 @@ def get_workspace_tree(directory: str = "", max_depth: int = 3) -> str:
         return f"Error generating workspace tree: {str(e)}"
 
 
+def get_code_skeleton(file_path: str) -> str:
+    """
+    Parses a Python file and extracts only the imports, class names, and function signatures.
+    Extremely useful for understanding large files without consuming massive context limits.
+    """
+    try:
+        safe_path = secure_resolve_path(file_path, get_allowed_paths())
+        if not safe_path.exists() or not safe_path.is_file():
+            return f"Error: File not found at {safe_path}"
+
+        if safe_path.suffix != ".py":
+            return "Error: get_code_skeleton currently only supports Python (.py) files."
+
+        content = safe_path.read_text(encoding="utf-8")
+        return _parse_python_skeleton(content)
+
+    except PermissionError as e:
+        return str(e)
+    except Exception as e:
+        return f"Error extracting skeleton: {str(e)}"
+
+
 def _parse_python_skeleton(content: str) -> str:
     """
     Private helper function to parse Python code and extract its skeleton.
@@ -345,28 +383,6 @@ def _parse_python_skeleton(content: str) -> str:
     return "\n".join(skeleton_lines)
 
 
-def get_code_skeleton(file_path: str) -> str:
-    """
-    Parses a Python file and extracts only the imports, class names, and function signatures.
-    Extremely useful for understanding large files without consuming massive context limits.
-    """
-    try:
-        safe_path = secure_resolve_path(file_path, get_allowed_paths())
-        if not safe_path.exists() or not safe_path.is_file():
-            return f"Error: File not found at {safe_path}"
-
-        if safe_path.suffix != ".py":
-            return "Error: get_code_skeleton currently only supports Python (.py) files."
-
-        content = safe_path.read_text(encoding="utf-8")
-        return _parse_python_skeleton(content)
-
-    except PermissionError as e:
-        return str(e)
-    except Exception as e:
-        return f"Error extracting skeleton: {str(e)}"
-
-
 def read_file_section(file_path: str, start_marker: str, end_marker: str) -> str:
     """
     Reads only a specific section of a file bounded by start_marker and end_marker (inclusive).
@@ -396,28 +412,6 @@ def read_file_section(file_path: str, start_marker: str, end_marker: str) -> str
         return str(e)
     except Exception as e:
         return f"Error reading file section: {str(e)}"
-
-
-def _search_file_for_string(file_path: Path, search_base: Path, search_string: str) -> list[str]:
-    """
-    Private helper function to scan a single file for a search string.
-    Separated to comply with Ruff cyclomatic complexity limits.
-    """
-    results = []
-    try:
-        content = file_path.read_text(encoding="utf-8")
-        if search_string in content:
-            # only split into lines if the file contains the string (saves memory/time)
-            lines = content.splitlines()
-            rel_path = file_path.relative_to(search_base)
-            for i, line in enumerate(lines, 1):
-                if search_string in line:
-                    results.append(f"{rel_path}:{i}: {line.strip()}")
-    except UnicodeDecodeError:
-        # silently ignore binary files (PDFs, images, etc.)
-        pass
-
-    return results
 
 
 def grep_workspace(search_string: str, directory: str = "") -> str:
@@ -460,9 +454,29 @@ def grep_workspace(search_string: str, directory: str = "") -> str:
         return f"Error executing grep: {str(e)}"
 
 
-# ==========================================
-# File Structure & Refactoring Operations
-# ==========================================
+def _search_file_for_string(file_path: Path, search_base: Path, search_string: str) -> list[str]:
+    """
+    Private helper function to scan a single file for a search string.
+    Separated to comply with Ruff cyclomatic complexity limits.
+    """
+    results = []
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        if search_string in content:
+            # only split into lines if the file contains the string (saves memory/time)
+            lines = content.splitlines()
+            rel_path = file_path.relative_to(search_base)
+            for i, line in enumerate(lines, 1):
+                if search_string in line:
+                    results.append(f"{rel_path}:{i}: {line.strip()}")
+    except UnicodeDecodeError:
+        # silently ignore binary files (PDFs, images, etc.)
+        pass
+
+    return results
+
+
+# === File Structure & Refactoring Operations ===
 
 
 def rename_file(old_path: str, new_path: str) -> str:
