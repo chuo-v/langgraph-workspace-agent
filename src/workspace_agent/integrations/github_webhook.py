@@ -3,16 +3,35 @@ import hmac
 import logging
 import os
 import re
+from typing import Any
 
 from src.workspace_agent.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "verify_github_signature",
+    "parse_github_pr_action",
+    "parse_agentic_ci_trigger",
+]
 
-def verify_github_signature(payload_body: bytes, x_hub_signature_256: str) -> bool:
+
+# ==========================================
+# Webhook Authentication
+# ==========================================
+
+
+def verify_github_signature(payload_body: bytes, x_hub_signature_256: str | None) -> bool:
     """
     Validates that the incoming webhook payload matches the configured GITHUB_WEBHOOK_SECRET.
-    Returns True if valid, False if verification fails or if the secret is missing.
+
+    Args:
+        payload_body (bytes): The raw request body bytes from the incoming GitHub webhook.
+        x_hub_signature_256 (str | None): The value of the 'X-Hub-Signature-256' header.
+
+    Returns:
+        bool: True if the HMAC SHA-256 signature is valid; False if verification fails,
+        if the signature header is missing, or if the secret is unconfigured.
     """
     secret = os.getenv("GITHUB_WEBHOOK_SECRET")
     if not secret:
@@ -28,10 +47,23 @@ def verify_github_signature(payload_body: bytes, x_hub_signature_256: str) -> bo
     return hmac.compare_digest(expected_signature, x_hub_signature_256)
 
 
-def parse_github_pr_action(payload: dict) -> str | None:
+# ==========================================
+# Pull Request Lifecycle
+# ==========================================
+
+
+def parse_github_pr_action(payload: dict[str, Any]) -> str | None:
     """
-    Analyzes the Pull Request event payload to handle agent branch lifecycle.
-    Returns 'LGTM' if an agent branch was merged, 'abort' if it was closed unmerged.
+    Analyzes the Pull Request event payload to handle agent branch lifecycle state transitions.
+
+    Args:
+        payload (dict[str, Any]): The raw JSON payload dictionary from the GitHub webhook event.
+
+    Returns:
+        str | None:
+            - 'LGTM' if an agent-generated branch ('agent/*') was successfully merged.
+            - 'abort' if an agent-generated branch was closed unmerged.
+            - None if the event is not a PR closure or does not target an agent branch.
     """
     if payload.get("action") != "closed" or "pull_request" not in payload:
         return None
@@ -51,10 +83,24 @@ def parse_github_pr_action(payload: dict) -> str | None:
         return "abort"
 
 
-def parse_agentic_ci_trigger(payload: dict) -> dict | None:
+# ==========================================
+# CI/CD & ChatOps Triggers
+# ==========================================
+
+
+def parse_agentic_ci_trigger(payload: dict[str, Any]) -> dict[str, Any] | None:
     """
     Analyzes Webhook payloads to determine if an Agentic CI/CD run should be triggered.
-    Returns a dictionary of PR metadata if triggered, otherwise None.
+
+    Evaluates both automatic PR events ('opened', 'synchronize') and manual ChatOps commands
+    in PR comments (e.g., '@chatops retest'), enforcing strict user authorization guards.
+
+    Args:
+        payload (dict[str, Any]): The raw JSON payload dictionary from the GitHub webhook event.
+
+    Returns:
+        dict[str, Any] | None: A dictionary containing essential PR metadata (repo, PR number,
+        commit SHA, target branch, or ChatOps flag) if a valid run is triggered; otherwise, None.
     """
     allowed_users = settings.agent.allowed_github_users
     chatops_name = settings.agent.chatops_name
