@@ -20,8 +20,7 @@ def get_llm(
     max_retries: int = 0,
     timeout: float = 120.0,
 ) -> Any | None:
-    """
-    Dynamically initializes an LLM based on the YAML configuration.
+    """Dynamically initializes an LLM based on the YAML configuration.
 
     Args:
         tier_name: The target tier to load ('base', 'standard', or 'frontier').
