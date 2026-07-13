@@ -22,8 +22,7 @@ PROMPTS_FILE = os.getenv("WORKSPACE_AGENT_PROMPTS_PATH") or os.path.join(
 
 
 class PromptManager:
-    """
-    Centralized registry and loader for YAML-based system prompts.
+    """Centralized registry and loader for YAML-based system prompts.
 
     Manages the lifecycle of loading, caching, and dynamically formatting prompt
     templates from the local filesystem for agent execution.
@@ -33,8 +32,7 @@ class PromptManager:
 
     @classmethod
     def get(cls, section: str, key: str, **kwargs: Any) -> str:
-        """
-        Retrieves and optionally formats a prompt template from the registry.
+        """Retrieves and optionally formats a prompt template from the registry.
 
         Args:
             section: The top-level category or domain in the YAML prompt file.
@@ -59,8 +57,7 @@ class PromptManager:
 
     @classmethod
     def get_prompts(cls) -> dict[str, Any]:
-        """
-        Loads and caches the prompt definitions from the local filesystem.
+        """Loads and caches the prompt definitions from the local filesystem.
 
         On initial invocation, reads the YAML file specified by PROMPTS_FILE and stores
         the parsed dictionary in class state for subsequent requests.
