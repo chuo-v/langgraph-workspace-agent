@@ -28,8 +28,7 @@ TIER_FRONTIER: int = 3
 
 
 class TerminalEscalationError(Exception):
-    """
-    Raised when a task requires Tier 3 reasoning (directly or via escalation)
+    """Raised when a task requires Tier 3 reasoning (directly or via escalation)
     but no Frontier model is configured or available. Expected to transition
     the workflow into a failure state or alert the human operator.
     """
@@ -43,8 +42,7 @@ class TerminalEscalationError(Exception):
 
 
 def get_intent_router(requested_tier: int = TIER_BASE, temperature: float = 0.0) -> Runnable | None:
-    """
-    Returns a unified LCEL Chain combining the System Prompt, LLM, and Output Parser.
+    """Returns a unified LCEL Chain combining the System Prompt, LLM, and Output Parser.
     Includes built-in runtime fallbacks to seamlessly escalate to higher tiers if a
     lower-tier model (e.g., local Ollama) crashes or times out.
 
@@ -105,8 +103,7 @@ def get_intent_router(requested_tier: int = TIER_BASE, temperature: float = 0.0)
 
 
 def _apply_routing_structured_output(llm: Runnable) -> Runnable:
-    """
-    Safely applies the RoutingDecision structured output schema based on the provider.
+    """Safely applies the RoutingDecision structured output schema based on the provider.
     Architectural Intent: Abstracts provider-specific function calling paradigms
     (e.g., DeepSeek/Gemini vs standard API) away from the main orchestration logic.
     """
@@ -128,8 +125,7 @@ def get_execution_llm(
     max_retries: int = 0,
     timeout: float = 120.0,
 ) -> Runnable | None:
-    """
-    Legacy wrapper for nodes that expect a single LLM to execute tools on.
+    """Legacy wrapper for nodes that expect a single LLM to execute tools on.
     Returns the highest priority LLM available based on tier sequences.
 
     Expected State Transitions: Extracts and returns the primary LLM configuration from a sequence.
@@ -153,8 +149,7 @@ def get_execution_llm_sequence(
     max_retries: int = 0,
     timeout: float = 120.0,
 ) -> list[Runnable]:
-    """
-    Returns a sequence of initialized LLM clients starting from the requested tier,
+    """Returns a sequence of initialized LLM clients starting from the requested tier,
     escalating up to Tier 3. Used to construct robust runtime fallback chains.
 
     Expected State Transitions: Aggregates a list of ordered LLM Runnables for fallbacks.
@@ -235,8 +230,7 @@ def get_execution_llm_sequence(
 
 
 def get_tier_for_model(model_key: str) -> int | None:
-    """
-    Dynamically resolves which tier a specific model is configured in.
+    """Dynamically resolves which tier a specific model is configured in.
     Architectural Intent: Serves as a mapping helper to ensure explicit string
     overrides properly sync with internal integer orchestration tiers.
     """
