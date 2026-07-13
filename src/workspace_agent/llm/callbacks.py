@@ -15,8 +15,7 @@ def get_langfuse_callback(
     user_id: str | None = None,
     tags: list | None = None,
 ) -> CallbackHandler | None:
-    """
-    Initializes and configures the Langfuse callback handler for LLM tracing and observability.
+    """Initializes and configures the Langfuse callback handler for LLM tracing and observability.
 
     Preconditions:
         Requires `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` to be set in the environment.

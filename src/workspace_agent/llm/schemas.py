@@ -10,8 +10,7 @@ __all__ = ["RoutingDecision"]
 
 
 class RoutingDecision(BaseModel):
-    """
-    Defines the exact JSON structure the Tier 1 model must return
+    """Defines the exact JSON structure the Tier 1 model must return
     during the parse_intent_node phase. Uses Structured Chain-of-Thought
     to prevent cognitive overload during disambiguation.
 
