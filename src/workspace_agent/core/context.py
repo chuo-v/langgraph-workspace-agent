@@ -24,8 +24,7 @@ def get_hybrid_context(
     config: RunnableConfig,
     is_frontier_tier: bool = False,
 ) -> list:
-    """
-    Assembles the context window by injecting Long-Term Entity Memory (from Store),
+    """Assembles the context window by injecting Long-Term Entity Memory (from Store),
     Episodic Semantic Memory (from VectorDB), and sliding Working Memory.
 
     State Transitions:
@@ -60,8 +59,7 @@ def get_hybrid_context(
 
 
 def _fetch_user_profile(user_id: str, store: BaseStore) -> dict:
-    """
-    Retrieves the Long-Term Entity Memory (User Profile) from the LangGraph Store.
+    """Retrieves the Long-Term Entity Memory (User Profile) from the LangGraph Store.
     Defaults to an empty dictionary if the profile item does not exist to prevent
     unexpected runtime errors.
     """
@@ -71,8 +69,7 @@ def _fetch_user_profile(user_id: str, store: BaseStore) -> dict:
 
 
 def _fetch_episodic_memory(latest_human_msg: str, collection: Any) -> str:
-    """
-    Executes a semantic search across past sessions to discover relevant technical context.
+    """Executes a semantic search across past sessions to discover relevant technical context.
     Formats and returns the resulting episodic injection string, or an empty string if no
     relevant memories are matched.
     """
@@ -94,8 +91,7 @@ def _fetch_episodic_memory(latest_human_msg: str, collection: Any) -> str:
 
 
 def _slide_working_memory(messages: list, is_frontier_tier: bool) -> list:
-    """
-    Applies tier-based truncation to the message history while strictly enforcing
+    """Applies tier-based truncation to the message history while strictly enforcing
     downstream LLM compliance. Crucially strips orphaned ToolMessages at the window's
     boundary and guarantees the returned sequence begins with a HumanMessage.
     """

@@ -155,8 +155,7 @@ class WorkspaceAgentConfig(BaseModel):
 
 
 def load_configuration() -> WorkspaceAgentConfig:
-    """
-    Loads and validates the YAML configuration schema.
+    """Loads and validates the YAML configuration schema.
 
     State Transitions:
     - Ingests data from `config.yaml` or the environment's config path override.
@@ -204,8 +203,7 @@ def load_configuration() -> WorkspaceAgentConfig:
 
 
 def validate_environment_secrets(config: WorkspaceAgentConfig) -> None:
-    """
-    Cross-references the active YAML configuration with system environment variables.
+    """Cross-references the active YAML configuration with system environment variables.
 
     State Transitions:
     - Scans for required core integrations and dynamically computes required LLM keys.
@@ -250,8 +248,7 @@ def validate_environment_secrets(config: WorkspaceAgentConfig) -> None:
 
 
 def _check_provider_key(tier_config: TierConfig, missing_secrets: list[str]) -> None:
-    """
-    Inspects a specific model tier to determine if its default provider requires an API key,
+    """Inspects a specific model tier to determine if its default provider requires an API key,
     appending any missing keys to the tracking array.
     """
     model_def = tier_config.available_models.get(tier_config.default_model)
