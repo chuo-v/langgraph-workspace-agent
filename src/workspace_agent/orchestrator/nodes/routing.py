@@ -48,8 +48,7 @@ MAX_FAST_PATH_LEN = 15
 
 
 def parse_intent_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
-    """
-    Tier 1 Routing Node with Escalation.
+    """Tier 1 Routing Node with Escalation.
     Analyzes the user's initial instruction and forces a structured JSON decision.
     Uses limited recent message history to handle conversational follow-ups naturally.
 
@@ -156,8 +155,7 @@ def parse_intent_node(state: AgentState, config: RunnableConfig | None = None) -
 
 
 def _get_latest_human_instruction(messages: list, fallback: str) -> str:
-    """
-    Extracts the absolute latest user feedback, explicitly ignoring system traps.
+    """Extracts the absolute latest user feedback, explicitly ignoring system traps.
     Handles edge cases where recent messages contain SYSTEM REJECTION or ERROR prefixes.
     """
     latest_human_msg = next(
@@ -174,8 +172,7 @@ def _get_latest_human_instruction(messages: list, fallback: str) -> str:
 
 
 def _extract_tier_command(instruction: str) -> tuple[str, bool, bool, str | None]:
-    """
-    Detects tier and model override commands in a user instruction.
+    """Detects tier and model override commands in a user instruction.
     Parses boundaries securely to prevent path collisions and strips the commands natively.
     """
     if not instruction:
@@ -214,8 +211,7 @@ def _extract_tier_command(instruction: str) -> tuple[str, bool, bool, str | None
 
 
 def _check_conversational_fast_path(clean_instruction: str) -> bool:
-    """
-    Fast-path for simple conversational declines/acknowledgments to prevent router confusion.
+    """Fast-path for simple conversational declines/acknowledgments to prevent router confusion.
     Avoids wasting LLM cycles when a user provides common single-word responses.
     """
     quick_responses = {
@@ -237,8 +233,7 @@ def _check_conversational_fast_path(clean_instruction: str) -> bool:
 
 
 def _build_recent_context(messages: list) -> str:
-    """
-    Builds a truncated sliding window of the conversation history.
+    """Builds a truncated sliding window of the conversation history.
     Enforces a strict MAX_CONTEXT_LENGTH per message to prevent payload bloat.
     """
     if not messages or len(messages) <= 1:
@@ -261,8 +256,7 @@ def _build_recent_context(messages: list) -> str:
 def _invoke_escalating_router(
     payload: dict, initial_tier: int, config: RunnableConfig | None = None
 ) -> tuple[Any, str | None]:
-    """
-    Helper to manage the timeout and tier-escalation logic for the unified router chain.
+    """Helper to manage the timeout and tier-escalation logic for the unified router chain.
     Isolates the blocking HTTP call in a background thread to safely escape hanging API responses.
     """
     config = config or {}
@@ -319,8 +313,7 @@ def _invoke_escalating_router(
 
 
 def conversational_reply_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
-    """
-    Handles conversational responses using a fallback LLM sequence when routing tools are bypassed.
+    """Handles conversational responses via a fallback sequence when routing tools are bypassed.
 
     Expected State Transitions: Appends the agent's AI response message, releases the busy lock,
     and increments the base execution counter.
@@ -357,8 +350,7 @@ def conversational_reply_node(state: AgentState, config: RunnableConfig | None =
 
 
 def clarification_node(state: AgentState) -> dict:
-    """
-    Human-in-the-Loop Node.
+    """Human-in-the-Loop Node.
     Handles dynamic LLM questions, file disambiguation, and workspace routing errors.
 
     Expected State Transitions: Generates an AI message requesting clarification and appends
@@ -398,8 +390,7 @@ def clarification_node(state: AgentState) -> dict:
 
 
 def cleanup_workflow_node(state: AgentState) -> dict:
-    """
-    Final exit ramp for aborted tasks in the parent graph.
+    """Final exit ramp for aborted tasks in the parent graph.
     Resets the busy lock, clears dangling conversational state, and handles Git repository hygiene.
 
     Expected State Transitions: Filters out intermediate tool and rejection messages, resets
@@ -464,8 +455,7 @@ def cleanup_workflow_node(state: AgentState) -> dict:
 
 
 def human_node(state: AgentState) -> dict:
-    """
-    Dummy breakpoint node for human-in-the-loop.
+    """Dummy breakpoint node for human-in-the-loop.
     The graph pauses before this node to wait for user input via Telegram.
 
     Expected State Transitions: Returns an empty dictionary to pause graph progression.
