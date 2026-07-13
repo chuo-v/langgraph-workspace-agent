@@ -22,8 +22,7 @@ __all__ = [
 
 
 def verify_github_signature(payload_body: bytes, x_hub_signature_256: str | None) -> bool:
-    """
-    Validates that the incoming webhook payload matches the configured GITHUB_WEBHOOK_SECRET.
+    """Validates that the incoming webhook payload matches the configured GITHUB_WEBHOOK_SECRET.
 
     Args:
         payload_body (bytes): The raw request body bytes from the incoming GitHub webhook.
@@ -53,8 +52,7 @@ def verify_github_signature(payload_body: bytes, x_hub_signature_256: str | None
 
 
 def parse_github_pr_action(payload: dict[str, Any]) -> str | None:
-    """
-    Analyzes the Pull Request event payload to handle agent branch lifecycle state transitions.
+    """Analyzes the Pull Request event payload to handle agent branch lifecycle state transitions.
 
     Args:
         payload (dict[str, Any]): The raw JSON payload dictionary from the GitHub webhook event.
@@ -89,8 +87,7 @@ def parse_github_pr_action(payload: dict[str, Any]) -> str | None:
 
 
 def parse_agentic_ci_trigger(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """
-    Analyzes Webhook payloads to determine if an Agentic CI/CD run should be triggered.
+    """Analyzes Webhook payloads to determine if an Agentic CI/CD run should be triggered.
 
     Evaluates both automatic PR events ('opened', 'synchronize') and manual ChatOps commands
     in PR comments (e.g., '@chatops retest'), enforcing strict user authorization guards.

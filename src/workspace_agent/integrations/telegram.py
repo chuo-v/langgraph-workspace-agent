@@ -19,8 +19,7 @@ __all__ = ["send_telegram_message"]
 
 
 def send_telegram_message(chat_id: str, text: str) -> None:
-    """
-    Encapsulates raw communication with the Telegram Bot API, delivering messages to a specified
+    """Encapsulates raw communication with the Telegram Bot API, delivering messages to a specified
     chat. Handles message chunking and automatic plain-text fallbacks if HTML formatting fails;
     network and HTTP errors are caught and logged locally without raising exceptions.
     """
@@ -74,8 +73,7 @@ def send_telegram_message(chat_id: str, text: str) -> None:
 
 
 def _chunk_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]:
-    """
-    Splits a long message into chunks that fit within Telegram's character limits.
+    """Splits a long message into chunks that fit within Telegram's character limits.
     Attempts to break cleanly at paragraph boundaries, then newlines, then spaces.
     """
     if len(text) <= max_length:
@@ -103,8 +101,7 @@ def _chunk_message(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list[str]
 
 
 def _convert_markdown_to_telegram_html(text: str) -> str:
-    """
-    Converts basic Markdown to Telegram-safe HTML.
+    """Converts basic Markdown to Telegram-safe HTML.
     Telegram's HTML parser is immune to the stray underscore/asterisk crashes
     that plague its legacy Markdown parser.
     """
