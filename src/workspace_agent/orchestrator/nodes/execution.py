@@ -49,8 +49,7 @@ __all__ = [
 def _build_fallback_chain(
     llms: Sequence[Any], tools: Sequence[Any] | None = None, structured_schema: Any = None
 ) -> Any:
-    """
-    Constructs a resilient LCEL chain with automatic fallbacks for LLM execution.
+    """Constructs a resilient LCEL chain with automatic fallbacks for LLM execution.
     Ensures tools and structured schemas are applied across all models in the failover sequence.
     """
     if not llms:
@@ -83,8 +82,7 @@ def _build_fallback_chain(
 def execute_task_node(  # noqa: PLR0911, PLR0915
     state: AgentState, config: RunnableConfig | None = None, store: BaseStore | None = None
 ) -> dict[str, Any]:
-    """
-    The Core Workhorse Node.
+    """The Core Workhorse Node.
     Assembles hybrid context, injects the workspace map, and triggers the LLM.
 
     Expected State Transitions:
@@ -233,8 +231,7 @@ def execute_task_node(  # noqa: PLR0911, PLR0915
 
 
 def _resolve_execution_tier(state: AgentState) -> int:
-    """
-    Determines the appropriate execution tier based on user-requested models and state flags.
+    """Determines the appropriate execution tier based on user-requested models and state flags.
     Defaults to the base tier if no explicit constraints are present to save overhead.
     """
     requested_model = state.get("requested_model")
@@ -251,8 +248,7 @@ def _resolve_execution_tier(state: AgentState) -> int:
 
 
 def _check_circuit_breaker(messages: list[BaseMessage]) -> dict[str, Any] | None:
-    """
-    Analyzes message history to detect and interrupt runaway autonomous tool execution loops.
+    """Analyzes message history to detect and interrupt runaway autonomous tool execution loops.
     Aborts the workflow and returns a terminal message state if the threshold is exceeded.
     """
     consecutive_agent_steps = 0
@@ -281,8 +277,7 @@ def _check_circuit_breaker(messages: list[BaseMessage]) -> dict[str, Any] | None
 def _perform_sync_check(
     state: AgentState, target_path: str, target_branch: str, target_ws: str
 ) -> dict[str, Any] | None:
-    """
-    Verifies and synchronizes the target repository branch prior to sandbox execution.
+    """Verifies and synchronizes the target repository branch prior to sandbox execution.
     Skips the sync entirely if the agent is actively in a transient tool or error-recovery loop.
     """
     is_tool_loop = bool(state.get("messages") and state["messages"][-1].type == "tool")
@@ -309,8 +304,7 @@ def _perform_sync_check(
 def _build_cross_workspace_prompt(
     state: AgentState, target_ws: str, target_path: str
 ) -> SystemMessage:
-    """
-    Constructs a strict system prompt bounding the active intent category to specific
+    """Constructs a strict system prompt bounding the active intent category to specific
     directory paths. Prevents the LLM from inadvertently hallucinating file modifications
     outside registered domains.
     """
@@ -334,8 +328,7 @@ def _build_cross_workspace_prompt(
 
 
 def _filter_execution_context(messages: list[BaseMessage]) -> list[BaseMessage]:
-    """
-    Sanitizes the execution context by stripping past orchestrator success markers and
+    """Sanitizes the execution context by stripping past orchestrator success markers and
     unsupported summary strings. This isolation prevents the LLM from mimicking previous
     success states and halting prematurely.
     """
@@ -394,8 +387,7 @@ def _filter_execution_context(messages: list[BaseMessage]) -> list[BaseMessage]:
 
 
 def _calculate_telemetry(state: AgentState, tier: int) -> tuple[int, int, int]:
-    """
-    Computes updated LLM invocation counts for telemetry tracking across infrastructure tiers.
+    """Computes updated LLM invocation counts for telemetry tracking across infrastructure tiers.
     Ensures usage bounds and metrics remain perfectly accurate during transient fallback
     or retry loops.
     """
@@ -407,8 +399,7 @@ def _calculate_telemetry(state: AgentState, tier: int) -> tuple[int, int, int]:
 
 
 def _sanitize_llm_response(response: AIMessage) -> None:
-    """
-    Cleans empty text blocks from structural LLM responses to ensure multi-provider API
+    """Cleans empty text blocks from structural LLM responses to ensure multi-provider API
     compatibility. Explicitly avoids injecting generic text to prevent small models from
     overfitting and hallucinating.
     """
@@ -435,8 +426,7 @@ def _sanitize_llm_response(response: AIMessage) -> None:
 
 
 def _extract_modified_tex_files(current_files: list[str], response: AIMessage) -> list[str]:
-    """
-    Traps newly modified or created .tex files from successful tool calls for compiler
+    """Traps newly modified or created .tex files from successful tool calls for compiler
     post-processing. Evaluates deletions and renames directly to maintain an accurate
     internal cache of active documents.
     """
@@ -482,8 +472,7 @@ def _extract_modified_tex_files(current_files: list[str], response: AIMessage) -
 def workspace_tools_node(
     state: AgentState, config: RunnableConfig | None = None, store: BaseStore | None = None
 ) -> dict[str, Any]:
-    """
-    Custom node to natively execute tools sequentially.
+    """Custom node to natively execute tools sequentially.
     File system agents MUST execute tools sequentially to prevent race conditions
     when multiple tools attempt to edit the same file simultaneously.
 
@@ -603,8 +592,7 @@ def workspace_tools_node(
 def _post_process_tool_messages(
     new_msgs: list[BaseMessage], tool_calls: list[dict[str, Any]], initial_retries: int
 ) -> tuple[str | None, list[str] | None, str | None, int]:
-    """
-    Extracts business logic outputs, user clarifications, and error states from executed
+    """Extracts business logic outputs, user clarifications, and error states from executed
     sandbox tools. Increments the retry counter dynamically if hard invocation failures
     or syntax errors are detected natively.
     """
@@ -635,8 +623,7 @@ def _post_process_tool_messages(
 
 
 def _is_tool_error(tool_name: str, res_str: str) -> bool:
-    """
-    Evaluates specific tool outputs to determine if the resulting string constitutes a
+    """Evaluates specific tool outputs to determine if the resulting string constitutes a
     hard system error. Traps known sandbox signatures, runtime tracebacks, and OS-level
     failure strings dynamically.
     """
@@ -673,8 +660,7 @@ def _is_tool_error(tool_name: str, res_str: str) -> bool:
 
 
 def force_tool_retry_node(state: AgentState) -> dict[str, Any]:
-    """
-    Appends a system message forcing the LLM to emit a tool call.
+    """Appends a system message forcing the LLM to emit a tool call.
 
     Expected State Transitions:
     - Appends a localized `SystemMessage` prompt directly to `messages`.
@@ -723,8 +709,7 @@ class MemoryExtraction(BaseModel):
 def update_memory_node(
     state: AgentState, config: RunnableConfig | None = None, store: BaseStore | None = None
 ) -> dict[str, Any]:
-    """
-    Asynchronous Memory extraction node.
+    """Asynchronous Memory extraction node.
     Writes structured facts to the LangGraph Store and embeds operational insights into ChromaDB.
 
     Expected State Transitions:

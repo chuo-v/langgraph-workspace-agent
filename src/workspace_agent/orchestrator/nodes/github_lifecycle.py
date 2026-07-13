@@ -63,8 +63,7 @@ except Exception as e:
 
 
 def compile_node(state: PRState, config: RunnableConfig = None) -> dict:
-    """
-    Automated graph node that forcefully compiles any modified LaTeX files.
+    """Automated graph node that forcefully compiles any modified LaTeX files.
     Provides an autonomous feedback loop to the LLM if compilation fails.
 
     State Transitions:
@@ -116,8 +115,7 @@ def compile_node(state: PRState, config: RunnableConfig = None) -> dict:
 
 
 def run_pre_commit_node(state: PRState, config: RunnableConfig = None) -> dict:
-    """
-    Executes pre-commit tools (e.g., formatters, linters, type-checkers).
+    """Executes pre-commit tools (e.g., formatters, linters, type-checkers).
     If a tool fails and cannot auto-fix, it routes the error back to the LLM.
 
     State Transitions:
@@ -195,8 +193,7 @@ def run_pre_commit_node(state: PRState, config: RunnableConfig = None) -> dict:
 
 
 def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:
-    """
-    Reflection Node: Uses git diff and an LLM critic to verify the agent actually
+    """Reflection Node: Uses git diff and an LLM critic to verify the agent actually
     completed the requested task before opening a PR.
 
     State Transitions:
@@ -279,8 +276,7 @@ def evaluate_diff_node(state: PRState, config: RunnableConfig = None) -> dict:
 
 
 def _get_evaluation_diffs(target_path: str, target_branch: str) -> tuple[str | None, str | None]:
-    """
-    Helper to stage intent-to-add files and fetch git diffs for evaluation.
+    """Helper to stage intent-to-add files and fetch git diffs for evaluation.
     Ensures untracked files are captured so the LLM critic sees the complete scope of modifications.
     """
     try:
@@ -321,8 +317,7 @@ def _handle_evaluation_pass(
     explicit_escape: bool,
     retry_count: int,
 ) -> dict:
-    """
-    Helper to process a successful critic evaluation.
+    """Helper to process a successful critic evaluation.
     Traps autonomous tool hallucinations by strictly validating diff changes
     against declared intents.
     """
@@ -359,8 +354,7 @@ def _handle_evaluation_pass(
 
 
 def _handle_evaluation_fail(eval_result: str, state: PRState, retry_count: int) -> dict:
-    """
-    Helper to process a failed critic evaluation.
+    """Helper to process a failed critic evaluation.
     Triggers a retry loop by sending formatted semantic feedback to the primary
     agent, or aborts if max attempts are reached.
     """
@@ -394,8 +388,7 @@ def _handle_evaluation_fail(eval_result: str, state: PRState, retry_count: int) 
 
 
 def agentic_ci_node(state: PRState, config: RunnableConfig = None) -> dict:
-    """
-    Agentic CI/CD Execution Node.
+    """Agentic CI/CD Execution Node.
     Iterates through configured CI suites, executes them via OS-level subprocess isolation,
     and natively reports status checks and log aggregations back to the GitHub Pull Request.
 
@@ -538,8 +531,7 @@ def _acquire_preemptive_lock(
     commit_sha: str | None,
     repo_full_name: str | None,
 ) -> bool:
-    """
-    Attempts to acquire the CI lock using Redis to limit concurrent environment load.
+    """Attempts to acquire the CI lock using Redis to limit concurrent environment load.
     Preempts older stale runs or rejects execution outright based on maximum concurrency rules.
     """
     if not redis_client:
@@ -586,8 +578,7 @@ def _handle_concurrency_rejection(
     is_already_running: bool,
     active_jobs: int,
 ) -> None:
-    """
-    Helper to post rejection messages to GitHub when CI limits are hit.
+    """Helper to post rejection messages to GitHub when CI limits are hit.
     Notifies users of skipped tests to preserve global system resources.
     """
     max_jobs = settings.agent.max_concurrent_ci_jobs
@@ -623,8 +614,7 @@ def _handle_concurrency_rejection(
 
 
 def _preempt_stale_ci_run(workspace_lock_id: str, pid_key: str) -> None:
-    """
-    Helper to terminate an older, superseded Agentic CI test process tree.
+    """Helper to terminate an older, superseded Agentic CI test process tree.
     Uses psutil to aggressively clear memory and processes for the newest PR commit.
     """
     if not redis_client:
@@ -664,8 +654,7 @@ def _execute_ci_suites(
     repo_full_name: str | None,
     run_id: str,
 ) -> list[dict]:
-    """
-    Helper to isolate CI subprocess executions and coordinate GitHub commit statuses.
+    """Helper to isolate CI subprocess executions and coordinate GitHub commit statuses.
     Gracefully surfaces errors, OS timeouts, or intentional interrupt signals if a
     newer commit supersedes the process.
     """
@@ -776,8 +765,7 @@ def _execute_ci_suites(
 def _post_ci_results_comment(
     target_path: str, pr_number: int, repo_full_name: str | None, results: list[dict]
 ) -> None:
-    """
-    Helper to format and post the consolidated CI results to GitHub.
+    """Helper to format and post the consolidated CI results to GitHub.
     Automatically truncates massive test logs to prevent hitting GitHub API limits.
     """
     if not results:
@@ -819,9 +807,8 @@ def _release_preemptive_lock_and_cleanup(
     run_id: str,
     tmp_dir: str | None = None,
 ) -> None:
-    """
-    Releases the Redis concurrency lock if we still own it, and safely garbage collects the tmp dir.
-    Guarantees cleanup even if the process was preempted to prevent local filesystem exhaustion.
+    """Releases the Redis lock if we own it, and safely garbage collects the tmp dir.
+    Guarantees local filesystem cleanup even if the process was preempted by a newer run.
     """
     workspace_lock_id = f"ci_job:{target_path}"
     pid_key = f"ci_pid:{target_path}"
@@ -861,8 +848,7 @@ def _release_preemptive_lock_and_cleanup(
 
 
 def review_pr_node(state: PRState, config: RunnableConfig = None) -> dict:
-    """
-    Branch-and-Link execution.
+    """Branch-and-Link execution.
     Branches the code, commits, pushes, and suspends for human review.
 
     State Transitions:
@@ -1016,8 +1002,7 @@ def review_pr_node(state: PRState, config: RunnableConfig = None) -> dict:
 def _generate_commit_message(
     instruction_context: str, incremental_diff: str, blueprint: str, config: RunnableConfig = None
 ) -> str:
-    """
-    Helper to generate a semantic commit message using the LLM based on the actual diff.
+    """Helper to generate a semantic commit message using the LLM based on the actual diff.
     Ensures commits have contextually accurate summaries regardless of original intention.
     """
     raw_prefix = settings.agent.agent_prefix or ""
@@ -1057,8 +1042,7 @@ def _generate_commit_message(
 def _generate_pr_metadata(
     instruction_context: str, raw_diff: str, blueprint: str, config: RunnableConfig = None
 ) -> tuple[str, str, str]:
-    """
-    Helper to generate semantic branch names and PR descriptions using Map-Reduce.
+    """Helper to generate semantic branch names and PR descriptions using Map-Reduce.
     Combines deep file-by-file context mapping to bypass LLM token limits on large modifications.
     """
     config = config or {}
@@ -1130,8 +1114,7 @@ def _generate_pr_metadata(
 
 
 def _chunk_git_diff(raw_diff: str, max_chunk_length: int = MAX_DIFF_LENGTH) -> list[str]:
-    """
-    Splits a raw git diff into manageable chunks safely along file boundaries.
+    """Splits a raw git diff into manageable chunks safely along file boundaries.
     Truncates extremely large single-file diffs to prevent downstream prompt injection failures.
     """
     if is_diff_empty(raw_diff):
@@ -1167,8 +1150,7 @@ def _chunk_git_diff(raw_diff: str, max_chunk_length: int = MAX_DIFF_LENGTH) -> l
 
 
 def _handle_commit_failure(commit_response: dict, retry_count: int, branch_name: str) -> dict:
-    """
-    Helper to handle self-healing loops or aborts on commit failures.
+    """Helper to handle self-healing loops or aborts on commit failures.
     Differentiates 'no changes' failures from terminal OS-level git errors for
     accurate LLM feedback.
     """
@@ -1214,8 +1196,7 @@ def _attempt_pr_update(
     generated_body: str,
     generated_summary: str,
 ) -> str:
-    """
-    Attempts to patch an existing GitHub PR.
+    """Attempts to patch an existing GitHub PR.
     Silently fails and returns an empty string to gracefully degrade if URL parsing or APIs crash.
     """
     if not directory or not pending_pr_url:
@@ -1244,8 +1225,7 @@ def _attempt_pr_update(
 
 
 def pr_merged_node(state: AgentState) -> dict:
-    """
-    Finalization step after human review.
+    """Finalization step after human review.
     Cleans up the active branch locally and resets the global Git state.
 
     State Transitions:
