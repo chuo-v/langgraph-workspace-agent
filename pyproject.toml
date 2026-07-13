@@ -63,10 +63,17 @@ exclude = [
 # UP: pyupgrade (Modernize syntax)
 # PL: Pylint
 # B: Bugbear (Common bugs)
-select = ["E", "F", "I", "N", "UP", "PL", "B"]
+# D: pydocstyle (Docstring rules)
+select = ["E", "F", "I", "N", "UP", "PL", "B", "D"]
 
 # rules to ignore
-ignore = []
+ignore = [
+    "D100", # Missing docstring in public module
+    "D104", # Missing docstring in public package
+    "D203", # 1 blank line required before class docstring (formatter conflict)
+    "D205", # 1 blank line required between summary line and description
+    "D213", # Multi-line docstring summary should start at the second line
+]
 
 [tool.ruff.lint.isort]
 # ensure imports are sorted and grouped logically
@@ -76,14 +83,18 @@ known-first-party = ["src"]
 # Global override to allow up to 8 arguments per function definition
 max-args = 8
 
+[tool.ruff.lint.pydocstyle]
+# Enforce Google-style docstring structures for standard LLM parsing
+convention = "google"
+
 [tool.ruff.format]
 # standardize on double quotes and consistent indentation
 quote-style = "double"
 indent-style = "space"
 
 [tool.ruff.lint.per-file-ignores]
-# ignore "magic values" (PLR2004) in the tests directory
-"tests/**/*" = ["PLR2004"]
+# ignore "magic values" (PLR2004) and docstring limits in the tests directory
+"tests/**/*" = ["PLR2004", "D"]
 
 [tool.pytest.ini_options]
 # treat root of repo as a source directory
