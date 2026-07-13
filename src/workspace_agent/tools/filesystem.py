@@ -26,8 +26,7 @@ __all__ = [
 
 
 def get_allowed_paths() -> list[str]:
-    """
-    Retrieves the whitelisted directories from the environment.
+    """Retrieves the whitelisted directories from the environment.
     Defaults to the standard git workspace if not explicitly set.
     """
     default_workspace = str(Path.home() / "git")
@@ -36,8 +35,7 @@ def get_allowed_paths() -> list[str]:
 
 
 def secure_resolve_path(requested_path: str | Path, allowed_paths: list[str | Path]) -> Path:
-    """
-    Resolves a requested file path and strictly verifies it resides
+    """Resolves a requested file path and strictly verifies it resides
     within one of the whitelisted workspace directories.
 
     Raises:
@@ -104,8 +102,7 @@ def write_file(file_path: str, content: str) -> str:
 
 
 def search_and_replace(file_path: str, old_text: str, new_text: str) -> str:
-    """
-    Precisely replaces an exact string in a file with a new string.
+    """Precisely replaces an exact string in a file with a new string.
     The old_text must match exactly and be unique in the file to prevent accidental overwrites.
     """
     try:
@@ -141,8 +138,7 @@ def search_and_replace(file_path: str, old_text: str, new_text: str) -> str:
 
 
 def replace_text_block(file_path: str, start_marker: str, end_marker: str, new_text: str) -> str:
-    """
-    Replaces a block of text bounded by start_marker and end_marker (INCLUSIVE of both markers)
+    """Replaces a block of text bounded by start_marker and end_marker (INCLUSIVE of both markers)
     with new_text.
     Useful for replacing entire sections, functions, or environments.
     """
@@ -186,8 +182,7 @@ def replace_text_block(file_path: str, start_marker: str, end_marker: str, new_t
 
 
 def search_workspace(pattern: str, directory: str = "") -> str:
-    """
-    Searches for files matching a glob pattern (e.g., '*.py') within the allowed workspaces.
+    """Searches for files matching a glob pattern (e.g., '*.py') within the allowed workspaces.
     If directory is provided, it searches within that specific sub-directory.
     """
     try:
@@ -232,8 +227,7 @@ def search_workspace(pattern: str, directory: str = "") -> str:
 
 
 def read_files(file_paths: list[str]) -> str:
-    """
-    Reads the contents of one or multiple files in a single batch operation.
+    """Reads the contents of one or multiple files in a single batch operation.
     Supports reading files across different allowed workspaces.
     Returns a formatted string delineating the contents of each file.
     To read a single file, just pass a list with one path.
@@ -271,8 +265,7 @@ def read_files(file_paths: list[str]) -> str:
 
 
 def get_workspace_tree(directory: str = "", max_depth: int = 3) -> str:
-    """
-    Generates a visual tree structure of the workspace or a specific directory.
+    """Generates a visual tree structure of the workspace or a specific directory.
     Useful for understanding the repository layout without reading full files.
     """
     try:
@@ -326,8 +319,7 @@ def get_workspace_tree(directory: str = "", max_depth: int = 3) -> str:
 
 
 def get_code_skeleton(file_path: str) -> str:
-    """
-    Parses a Python file and extracts only the imports, class names, and function signatures.
+    """Parses a Python file and extracts only the imports, class names, and function signatures.
     Extremely useful for understanding large files without consuming massive context limits.
     """
     try:
@@ -348,8 +340,7 @@ def get_code_skeleton(file_path: str) -> str:
 
 
 def _parse_python_skeleton(content: str) -> str:
-    """
-    Private helper function to parse Python code and extract its skeleton.
+    """Private helper function to parse Python code and extract its skeleton.
     Separated to comply with Ruff cyclomatic complexity and branching limits.
     """
     try:
@@ -384,8 +375,7 @@ def _parse_python_skeleton(content: str) -> str:
 
 
 def read_file_section(file_path: str, start_marker: str, end_marker: str) -> str:
-    """
-    Reads only a specific section of a file bounded by start_marker and end_marker (inclusive).
+    """Reads only a specific section of a file bounded by start_marker and end_marker (inclusive).
     Useful for analyzing targeted sections of large documents like LaTeX files or logs.
     """
     try:
@@ -415,8 +405,7 @@ def read_file_section(file_path: str, start_marker: str, end_marker: str) -> str
 
 
 def grep_workspace(search_string: str, directory: str = "") -> str:
-    """
-    Searches for an exact string across all files in a directory or the active workspace.
+    """Searches for an exact string across all files in a directory or the active workspace.
     Returns the file paths and line numbers where the string is found.
     Ignores hidden folders (like .git) and binary caches (like __pycache__).
     """
@@ -455,8 +444,7 @@ def grep_workspace(search_string: str, directory: str = "") -> str:
 
 
 def _search_file_for_string(file_path: Path, search_base: Path, search_string: str) -> list[str]:
-    """
-    Private helper function to scan a single file for a search string.
+    """Private helper function to scan a single file for a search string.
     Separated to comply with Ruff cyclomatic complexity limits.
     """
     results = []
@@ -480,8 +468,7 @@ def _search_file_for_string(file_path: Path, search_base: Path, search_string: s
 
 
 def rename_file(old_path: str, new_path: str) -> str:
-    """
-    Renames or moves a file from old_path to new_path.
+    """Renames or moves a file from old_path to new_path.
     Fails safely if the destination already exists to prevent accidental overwrites.
     """
     try:
@@ -511,8 +498,7 @@ def rename_file(old_path: str, new_path: str) -> str:
 
 
 def delete_file(file_path: str) -> str:
-    """
-    Permanently deletes a file from the repository.
+    """Permanently deletes a file from the repository.
     Relies on Git for version control safety.
     """
     try:
