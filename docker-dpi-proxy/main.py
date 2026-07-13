@@ -1,5 +1,4 @@
-"""
-Docker Deep-Packet-Inspection (DPI) Proxy - L4/L7 Hybrid
+"""Docker Deep-Packet-Inspection (DPI) Proxy - L4/L7 Hybrid.
 
 What is this proxy for?
 -----------------------
@@ -267,6 +266,7 @@ async def _handle_dpi_interception(
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    """Handles incoming client socket connections and routes them through the DPI firewall."""
     docker_writer = None
     try:
         # 1. Connect to the real Docker socket
@@ -319,6 +319,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 
 async def main():
+    """Initializes the async socket server and begins listening for Docker client requests."""
     server = await asyncio.start_server(handle_client, LISTEN_HOST, LISTEN_PORT)
     async with server:
         await server.serve_forever()
