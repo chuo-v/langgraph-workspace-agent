@@ -29,8 +29,7 @@ pr_workflow.add_node("agentic_ci", github_lifecycle.agentic_ci_node)
 
 
 def _route_pr_entry(state: PRState) -> str:
-    """
-    Routes initial PR tasks based on the presence of CI triggers, modified tex files,
+    """Routes initial PR tasks based on the presence of CI triggers, modified tex files,
     or normal execution.
     """
     # If commit_sha is present, this is a CI trigger
@@ -43,8 +42,7 @@ def _route_pr_entry(state: PRState) -> str:
 
 
 def _route_after_pre_commit(state: PRState) -> str:
-    """
-    Evaluates pre-commit hook results to route to diff evaluation or abort back to
+    """Evaluates pre-commit hook results to route to diff evaluation or abort back to
     parent on unrecoverable errors.
     """
     if state.get("is_aborted"):
@@ -56,8 +54,7 @@ def _route_after_pre_commit(state: PRState) -> str:
 
 
 def _route_after_compilation(state: PRState) -> str:
-    """
-    Evaluates LaTeX compilation results, routing to PR review on success or
+    """Evaluates LaTeX compilation results, routing to PR review on success or
     exiting on failure.
     """
     if state.get("is_aborted"):
@@ -69,8 +66,7 @@ def _route_after_compilation(state: PRState) -> str:
 
 
 def _route_after_evaluation(state: PRState) -> str:
-    """
-    Determines if the semantic diff evaluation succeeded, routing to PR review
+    """Determines if the semantic diff evaluation succeeded, routing to PR review
     or exiting on read-only/error states.
     """
     if state.get("is_aborted"):
@@ -138,8 +134,7 @@ workflow.add_node("pull_request_subgraph", _pull_request_subgraph_node)
 
 
 def _route_after_intent(state: AgentState) -> str:
-    """
-    Routes based on the Tier 1 model's intent classification, checking confidence
+    """Routes based on the Tier 1 model's intent classification, checking confidence
     and workspace path resolution.
     """
     if state.get("is_aborted"):
@@ -162,8 +157,7 @@ def _route_after_intent(state: AgentState) -> str:
 
 
 def _route_after_llm(state: AgentState) -> str:
-    """
-    Routes to the ToolNode if the LLM generated tool calls, forces retries on
+    """Routes to the ToolNode if the LLM generated tool calls, forces retries on
     un-called tools, or evaluates the diff.
     """
     if state.get("is_aborted"):
@@ -197,8 +191,7 @@ def _route_after_llm(state: AgentState) -> str:
 
 
 def _route_after_execution(state: AgentState) -> str:  # noqa: PLR0911
-    """
-    Evaluates the execution node's output to determine if the workflow should proceed
+    """Evaluates the execution node's output to determine if the workflow should proceed
     to the evaluation phase or terminate early.
     """
     if state.get("is_aborted"):
@@ -235,8 +228,7 @@ def _route_after_execution(state: AgentState) -> str:  # noqa: PLR0911
 
 
 def _route_after_subgraph(state: AgentState) -> str:
-    """
-    Evaluates the state payload returned from the isolated PR subgraph to route to
+    """Evaluates the state payload returned from the isolated PR subgraph to route to
     human review or execution retries.
     """
     if state.get("is_aborted"):
@@ -263,8 +255,7 @@ def _route_after_subgraph(state: AgentState) -> str:
 
 
 def _route_after_human_clarify(state: AgentState) -> str:
-    """
-    Evaluates human clarification input to either execute tasks, parse new intent,
+    """Evaluates human clarification input to either execute tasks, parse new intent,
     or handle external merges.
     """
     if state.get("is_aborted"):
@@ -287,8 +278,7 @@ def _route_after_human_clarify(state: AgentState) -> str:
 
 
 def _route_after_human_pr(state: AgentState) -> str:
-    """
-    Routes execution after the user has reviewed the pending Pull Request, returning
+    """Routes execution after the user has reviewed the pending Pull Request, returning
     to execution on rejection.
     """
     if state.get("is_aborted"):
@@ -344,8 +334,7 @@ if os.path.exists(PROFILE_PATH):
 
 
 def _get_checkpointer():
-    """
-    Attempts to connect to the Redis container for persistent memory across webhooks,
+    """Attempts to connect to the Redis container for persistent memory across webhooks,
     falling back to ephemeral MemorySaver.
     """
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
