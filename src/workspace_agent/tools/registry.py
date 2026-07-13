@@ -45,8 +45,7 @@ __all__ = [
 def ask_user_for_clarification(
     options: list[str] | None = None, question: str | None = None
 ) -> str:
-    """
-    State-modification tool.
+    """State-modification tool.
     Called by the LLM if it finds multiple conflicting files or needs
     to ask the user a specific question before proceeding.
     """
@@ -56,8 +55,7 @@ def ask_user_for_clarification(
 
 
 def mark_task_already_completed(reason: str) -> str:
-    """
-    Call this tool immediately if you evaluate the workspace and determine that the
+    """Call this tool immediately if you evaluate the workspace and determine that the
     user's requested changes are ALREADY present, or no action is actually required.
     Provide a brief reason explaining why no changes were needed.
     """
@@ -104,8 +102,7 @@ agent_tools: list[StructuredTool] = [
 
 
 def execute_tool_call(tool_call: dict[str, Any], config: RunnableConfig | None = None) -> str:
-    """
-    Manually invoke a tool from the registry and return its string result.
+    """Manually invoke a tool from the registry and return its string result.
 
     Passes the `RunnableConfig` down into tools that require dependency injection
     or execution context.

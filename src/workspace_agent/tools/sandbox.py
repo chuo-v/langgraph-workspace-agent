@@ -22,8 +22,7 @@ __all__ = [
 
 
 def run_python_script(script_path: str, config: RunnableConfig) -> str:
-    """
-    Spins up an ephemeral Docker container to execute a Python script safely.
+    """Spins up an ephemeral Docker container to execute a Python script safely.
     The directory containing the script is bind-mounted into the container.
     """
     try:
@@ -87,8 +86,7 @@ def run_python_script(script_path: str, config: RunnableConfig) -> str:
 
 
 def compile_latex_document(tex_file_path: str, config: RunnableConfig) -> str:
-    """
-    Compiles a LaTeX document using latexmk inside the Docker sandbox.
+    """Compiles a LaTeX document using latexmk inside the Docker sandbox.
     Resulting PDF persists in the mounted directory.
     """
     try:
@@ -151,8 +149,7 @@ def compile_latex_document(tex_file_path: str, config: RunnableConfig) -> str:
 
 
 def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
-    """
-    Runs pytest on a specific test file or directory inside the Docker sandbox.
+    """Runs pytest on a specific test file or directory inside the Docker sandbox.
     Mounts the root of the workspace to ensure module imports resolve correctly.
     """
     try:
@@ -236,8 +233,7 @@ def run_pytest(test_file_path: str, config: RunnableConfig) -> str:
 
 
 def _resolve_workspace_and_path(safe_path: Path) -> tuple[Path, str]:
-    """
-    Helper to determine the strict workspace boundary and relative test path for
+    """Helper to determine the strict workspace boundary and relative test path for
     execution. Falls back to restricting the mount to the immediate parent
     directory if no workspace root match is found.
     """
@@ -257,8 +253,7 @@ def _resolve_workspace_and_path(safe_path: Path) -> tuple[Path, str]:
 
 
 def _build_pytest_command(workspace_root: Path, rel_path: str) -> str:
-    """
-    Helper to dynamically detect and build dependency setup and pytest commands.
+    """Helper to dynamically detect and build dependency setup and pytest commands.
     Automatically chains package installation commands based on requirements files
     or pyproject.toml before running pytest.
     """
@@ -290,8 +285,7 @@ def _build_pytest_command(workspace_root: Path, rel_path: str) -> str:
 
 
 def _get_docker_client(config: RunnableConfig) -> docker.DockerClient:
-    """
-    Retrieves the Docker client, now routing through the socket proxy for
+    """Retrieves the Docker client, now routing through the socket proxy for
     hardened container orchestration. Falls back to environment initialization
     if an explicit client is not provided in the config.
     """
@@ -309,8 +303,7 @@ def _get_docker_client(config: RunnableConfig) -> docker.DockerClient:
 
 
 def _get_secure_mounts(host_mount_dir: Path) -> tuple[list[str], dict[str, str]]:
-    """
-    Creates secure volume and tmpfs mappings to explicitly mask sensitive host
+    """Creates secure volume and tmpfs mappings to explicitly mask sensitive host
     files. Uses RAM disks and null devices to avoid Docker-in-Docker path
     translation issues while recursively protecting secrets and submodules.
     """
@@ -353,8 +346,7 @@ def _get_secure_mounts(host_mount_dir: Path) -> tuple[list[str], dict[str, str]]
 def _truncate_logs(
     logs: str, max_lines: int = 500, head_lines: int = 50, tail_lines: int = 450
 ) -> str:
-    """
-    Safely truncates massive terminal outputs to prevent LLM context window blowouts.
+    """Safely truncates massive terminal outputs to prevent LLM context window blowouts.
     Keeps the beginning (setup) and end (tracebacks/summaries) of the logs while
     preserving the most relevant context.
     """
