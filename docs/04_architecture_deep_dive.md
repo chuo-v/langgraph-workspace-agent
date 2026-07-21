@@ -59,9 +59,9 @@ Standard developer agents execute raw code or shell commands directly on the hos
 To prevent a compromised LLM from abusing the host Docker socket (e.g., spawning privileged containers or mounting root directories), the orchestrator routes Docker socket traffic through an internal `docker-proxy` service (`docker-dpi-proxy/main.py`).
 * **Endpoint Role-Based Access Control (RBAC):** Restricts the API routes the agent can call, allowing container creation, execution, and logs while blocking administrative daemon operations.
 * **JSON Payload Inspection:** Intercepts `POST /containers/create` API calls, unmarshals the JSON request, and enforces security constraints:
- * Overrides `"Privileged": false` unconditionally.
- * Clears dangerous capabilities (`CapAdd`).
- * Scans volume `Binds` and `Mounts`, stripping root host mounts (`/`) or socket mounts (`docker.sock`).
+  * Overrides `"Privileged": false` unconditionally.
+  * Clears dangerous capabilities (`CapAdd`).
+  * Scans volume `Binds` and `Mounts`, stripping root host mounts (`/`) or socket mounts (`docker.sock`).
 
 ### Infrastructure Network Airgap (`sandbox-firewall`)
 Sandboxed container executions run attached to an isolated bridge network (`sandbox_net`). The `sandbox-firewall` container enforces `iptables` rules at the network layer:

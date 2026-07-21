@@ -55,20 +55,20 @@ Add the workspace agent MCP server to your `claude_desktop_config.json`:
 
 ```json
 {
- "mcpServers": {
- "workspace-agent-tools": {
- "command": "/path/to/langgraph-workspace-agent/.venv/bin/python",
- "args": [
- "-m",
- "src.workspace_agent.tools.mcp_server"
- ],
- "env": {
- "PYTHONPATH": "/path/to/langgraph-workspace-agent",
- "ALLOWED_PATHS": "/Users/username/git",
- "WORKSPACE_AGENT_CONFIG_PATH": "/path/to/langgraph-workspace-agent/config.yaml"
- }
- }
- }
+  "mcpServers": {
+    "workspace-agent-tools": {
+      "command": "/path/to/langgraph-workspace-agent/.venv/bin/python",
+      "args": [
+        "-m",
+        "src.workspace_agent.tools.mcp_server"
+      ],
+      "env": {
+        "PYTHONPATH": "/path/to/langgraph-workspace-agent",
+        "ALLOWED_PATHS": "/Users/username/git",
+        "WORKSPACE_AGENT_CONFIG_PATH": "/path/to/langgraph-workspace-agent/config.yaml"
+      }
+    }
+  }
 }
 ```
 
