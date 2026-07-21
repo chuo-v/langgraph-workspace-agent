@@ -46,13 +46,27 @@ In the background, the asynchronous `update_memory_node` constantly observes the
 
 ---
 
-## 3. Security: The Ephemeral Execution Sandbox
+## 3. Security & Ephemeral Sandbox Infrastructure
 
-Standard developer agents execute raw code or shell commands directly on the host machine. This presents a critical vulnerability to prompt-injection attacks. This orchestrator utilizes a **Docker-out-of-Docker (DooD)** model to enforce an immutable security boundary.
+Standard developer agents execute raw code or shell commands directly on the host machine, creating severe vulnerability to prompt-injection attacks. This platform combines a **Docker-out-of-Docker (DooD)** execution model with multi-layered network and socket proxy boundaries.
 
-* **The Mechanism:** When the LangGraph worker needs to compile a LaTeX document or execute a Python script, it uses the host's Docker socket to programmatically spawn a temporary, ephemeral container (e.g., using `Dockerfile.sandbox`).
-* **Path Resolution & Whitelisting:** The filesystem MCP server aggressively sanitizes inputs. It uses Python's modern `pathlib` module (`.resolve()` and `.is_relative_to()`) to strictly verify that requested mounts reside within the `allowed_paths` defined in `config.yaml`. Any attempt to traverse upward (`../../etc/passwd`) immediately raises a fatal security exception.
-* **Controlled Side Effects:** The container bind-mounts *only* the specific authorized workspace directory. The agent executes the command, captures `stdout` and `stderr` (returning tracebacks to the LLM for self-correction), and then the container is instantly destroyed. Any modified files naturally persist on the host drive via the volume mount.
+### Ephemeral Container Execution
+* **The Mechanism:** When the LangGraph worker needs to compile a LaTeX document, execute a Python script, or run test suites, it programmatically spawns an ephemeral container (`Dockerfile.sandbox`) via the host Docker daemon.
+* **Path Resolution & Whitelisting:** Filesystem tools use Python's `pathlib` module (`.resolve()` and `.is_relative_to()`) to verify requested mounts reside strictly within `allowed_paths` defined in `config.yaml`. Any attempt to traverse upward (`../../etc/passwd`) immediately raises a fatal security exception.
+* **Controlled Side Effects:** The container bind-mounts *only* the specific authorized workspace directory. Once execution finishes and `stdout`/`stderr` logs are captured, the container is destroyed.
+
+### Layer-4 / Layer-7 Deep-Packet-Inspection (DPI) Proxy
+To prevent a compromised LLM from abusing the host Docker socket (e.g., spawning privileged containers or mounting root directories), the orchestrator routes Docker socket traffic through an internal `docker-proxy` service (`docker-dpi-proxy/main.py`).
+* **Endpoint Role-Based Access Control (RBAC):** Restricts the API routes the agent can call, allowing container creation, execution, and logs while blocking administrative daemon operations.
+* **JSON Payload Inspection:** Intercepts `POST /containers/create` API calls, unmarshals the JSON request, and enforces security constraints:
+ * Overrides `"Privileged": false` unconditionally.
+ * Clears dangerous capabilities (`CapAdd`).
+ * Scans volume `Binds` and `Mounts`, stripping root host mounts (`/`) or socket mounts (`docker.sock`).
+
+### Infrastructure Network Airgap (`sandbox-firewall`)
+Sandboxed container executions run attached to an isolated bridge network (`sandbox_net`). The `sandbox-firewall` container enforces `iptables` rules at the network layer:
+* **RFC1918 Private Range Drop:** Blocks sandbox containers from reaching local private IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), preventing lateral pivoting to host services, Redis, or Postgres.
+* **Restricted DNS Resolution:** Drops generic UDP/TCP port 53 DNS queries to arbitrary servers, permitting DNS traffic strictly to trusted resolvers defined in `.env` (`TRUSTED_DNS_PRIMARY` and `TRUSTED_DNS_SECONDARY`, e.g., Cloudflare `1.1.1.1` and Quad9 `9.9.9.9`).
 
 ---
 

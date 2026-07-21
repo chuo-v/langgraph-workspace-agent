@@ -105,8 +105,14 @@ ruff format .
 
 To expand the agent's capabilities, custom tools can be added to the execution environment.
 
-1. **Create the Tool:** Define the new tool logic in a Python file within the [`src/workspace_agent/tools/`](../src/workspace_agent/tools/) directory. Wrap the primary function using LangChain's `@tool` decorator. A clear, highly descriptive docstring is strictly required, as the execution LLM relies entirely on this docstring to understand when and how to invoke the tool.
-2. **Register the Tool:** Once defined, import the new tool and append it to the active list inside [`src/workspace_agent/tools/registry.py`](../src/workspace_agent/tools/registry.py). This step is mandatory; it ensures the orchestrator successfully binds the tool to the LLM during the execution node's lifecycle.
+1. **Create the Tool:** Define the new tool logic in a Python file within the [`src/workspace_agent/tools/`](../src/workspace_agent/tools/) directory. A clear, highly descriptive docstring is strictly required, as execution LLMs rely entirely on this docstring to understand when and how to invoke the tool.
+2. **Register in Internal Orchestrator:** Import the tool and append it to the `agent_tools` list inside [`src/workspace_agent/tools/registry.py`](../src/workspace_agent/tools/registry.py). This binds the tool to the agent's internal LangGraph execution nodes.
+3. **Expose to External MCP Clients:** If the tool should also be accessible to external IDEs (e.g., Claude Desktop, Cursor), register it on the FastMCP instance inside [`src/workspace_agent/tools/mcp_server.py`](../src/workspace_agent/tools/mcp_server.py):
+```python
+from src.workspace_agent.tools.your_module import your_new_tool
+
+mcp.tool()(your_new_tool)
+```
 
 ---
 
