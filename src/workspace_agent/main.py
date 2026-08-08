@@ -4,8 +4,10 @@ import os
 import secrets
 import threading
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import docker
 import httpx
@@ -25,14 +27,30 @@ from src.workspace_agent.integrations.github_webhook import (
 )
 from src.workspace_agent.integrations.telegram import send_telegram_message
 from src.workspace_agent.llm.callbacks import get_langfuse_callback
-from src.workspace_agent.orchestrator.graph import agent_app, pr_app
+from src.workspace_agent.orchestrator.graph import agent_app, agent_store, pr_app
 
 # configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Explicit Module Exports
+__all__ = [
+    "IODependencies",
+    "LockHeartbeat",
+    "app",
+    "get_active_thread",
+    "github_webhook",
+    "is_agent_busy",
+    "lifespan",
+    "process_agent_message",
+    "process_ci_trigger",
+    "set_active_thread",
+    "telegram_webhook",
+]
+
 # In-memory fallback for thread tracking (used during unit tests or Redis downtime)
-RUNTIME_STATE = {}
+RUNTIME_STATE: dict[str, str] = {}
+
 
 # ==========================================
 # Lifespan & IO Management
@@ -41,7 +59,11 @@ RUNTIME_STATE = {}
 
 @dataclass
 class IODependencies:
-    """Encapsulates all external IO clients to prevent function signature bloat."""
+    """Encapsulates all external IO clients to prevent function signature bloat.
+
+    Architectural Intent: Groups optional database and container daemon connections
+    passed into execution workflows, safely handling offline fallbacks.
+    """
 
     redis_client: redis.Redis | None = None
     chroma_collection: object | None = None
@@ -49,10 +71,14 @@ class IODependencies:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    Handles startup initialization and teardown of IO clients.
-    Attaches persistent clients to `app.state` to prevent global scope race conditions.
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Handles startup initialization and teardown of IO clients.
+
+    State Transitions: Attaches persistent ChromaDB, Docker, and Redis clients to
+    `app.state` on startup to prevent global scope race conditions. Automatically
+    closes active sockets during application teardown.
+    Exceptions: Catch-all blocks log warnings and fall back to None/in-memory routing
+    if external daemons are unreachable.
     """
     logger.info("Initializing I/O clients...")
 
@@ -104,13 +130,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="LangGraph Workspace Agent", lifespan=lifespan)
 
+
 # ==========================================
-# Session Management Router
+# Session Management
 # ==========================================
 
 
 def get_active_thread(chat_id: str, redis_client: redis.Redis | None = None) -> str:
-    """Fetches the active thread ID, preferring Redis for cross-restart persistence."""
+    """Fetches the active thread ID, preferring Redis for cross-restart persistence.
+
+    State Transitions: Returns the currently active LangGraph thread ID mapped to a chat.
+    Exceptions: Logs Redis connection errors and gracefully degrades to `RUNTIME_STATE`.
+    """
     if redis_client:
         try:
             val = redis_client.get(f"active_thread_{chat_id}")
@@ -122,8 +153,14 @@ def get_active_thread(chat_id: str, redis_client: redis.Redis | None = None) -> 
     return RUNTIME_STATE.get(chat_id, chat_id)
 
 
-def set_active_thread(chat_id: str, thread_id: str, redis_client: redis.Redis | None = None):
-    """Saves the active thread ID to both memory and Redis."""
+def set_active_thread(
+    chat_id: str, thread_id: str, redis_client: redis.Redis | None = None
+) -> None:
+    """Saves the active thread ID to both memory and Redis.
+
+    State Transitions: Updates the active conversation mapping in memory and Redis.
+    Exceptions: Logs Redis write errors while ensuring the in-memory state is updated.
+    """
     RUNTIME_STATE[chat_id] = thread_id
     if redis_client:
         try:
@@ -133,167 +170,16 @@ def set_active_thread(chat_id: str, thread_id: str, redis_client: redis.Redis | 
 
 
 # ==========================================
-# Private Helper Functions
-# ==========================================
-
-
-def _build_initial_inputs(text: str) -> dict:
-    """Helper to construct the initial state payload for a new thread."""
-    return {
-        "messages": [HumanMessage(content=text)],
-        "original_instruction": text,
-        "t1_base_calls": 0,
-        "t2_standard_calls": 0,
-        "t3_frontier_calls": 0,
-        "execution_retry_count": 0,
-        "latest_traceback_error": None,
-        "clarification_question": None,
-        "disambiguation_options": None,
-        "is_aborted": False,
-        "modified_tex_files": [],
-    }
-
-
-def _build_state_update(text: str, current_state) -> dict:
-    """Helper to determine state updates when resuming from a LangGraph breakpoint."""
-    pending_node = current_state.next[0]
-    state_update = {"messages": [HumanMessage(content=text)]}
-
-    # handle explicit human abort commands
-    if text.strip().lower() in ["abort", "cancel", "stop", "nevermind", "exit"]:
-        state_update["is_aborted"] = True
-
-    # check context using the values stored in the paused state
-    elif pending_node == "human_pr_node":
-        if current_state.values.get("pending_pr_url"):
-            state_update["human_approved"] = text.strip().upper() == "LGTM"
-
-    return state_update
-
-
-def _invoke_agent_graph(
-    text: str,
-    config: dict,
-    current_state,
-    io_deps: IODependencies,
-    lock: object | None,
-) -> tuple[dict, object | None]:
-    """Handles the branching logic of invoking the graph (new, resume, or recover)."""
-    if current_state.next:
-        pending_node = current_state.next[0]
-
-        # if the graph is stuck on an execution node due to a previous crash, transparently
-        # reset the thread so the new command isn't trapped in a dirty state.
-        if pending_node not in ["human_clarify_node", "human_pr_node"]:
-            thread_id = config["configurable"]["thread_id"]
-            logger.warning(f"Thread {thread_id} stuck at {pending_node}. Auto-recovering.")
-
-            # release lock on the broken thread
-            try:
-                clean_old_config = {"configurable": {"thread_id": thread_id}}
-                agent_app.update_state(clean_old_config, {"is_busy": False})
-            except Exception as e:
-                logger.warning(f"Error clearing broken thread state: {e}")
-
-            if lock:
-                try:
-                    lock.release()
-                except Exception as e:
-                    logger.warning(f"Error releasing old thread lock: {e}")
-
-            # transparently migrate the user to a clean thread ID
-            chat_id = config["configurable"]["user_id"]
-            new_thread = f"{chat_id}_{int(time.time())}"
-            set_active_thread(chat_id, new_thread, io_deps.redis_client)
-            config["configurable"]["thread_id"] = new_thread
-
-            # engage states and grab the Redis lock for the newly created thread
-            try:
-                clean_new_config = {"configurable": {"thread_id": new_thread}}
-                agent_app.update_state(clean_new_config, {"is_busy": True})
-            except Exception as e:
-                logger.warning(f"Error setting is_busy state: {e}")
-
-            if io_deps.redis_client:
-                # Set thread_local=False so background tasks can release the lock
-                lock = io_deps.redis_client.lock(
-                    f"agent_lock_{new_thread}", timeout=300, thread_local=False
-                )
-                lock.acquire(blocking=False)
-            else:
-                lock = None
-
-            inputs = _build_initial_inputs(text)
-            return agent_app.invoke(inputs, config), lock
-
-        # normal, healthy breakpoint resumption
-        state_update = _build_state_update(text, current_state)
-        state_update["is_busy"] = True
-
-        try:
-            # Use clean config to avoid checkpoint_id or serialization issues
-            clean_resume_config = {
-                "configurable": {"thread_id": config["configurable"]["thread_id"]}
-            }
-            agent_app.update_state(clean_resume_config, state_update, as_node=pending_node)
-        except Exception as e:
-            logger.error(f"Error updating state during resumption: {e}")
-
-        return agent_app.invoke(None, config), lock
-
-    # initialize a brand new instruction
-    try:
-        clean_config = {"configurable": {"thread_id": config["configurable"]["thread_id"]}}
-        agent_app.update_state(clean_config, {"is_busy": True})
-    except Exception as e:
-        logger.error(f"Error setting is_busy state for new instruction: {e}")
-
-    inputs = _build_initial_inputs(text)
-    return agent_app.invoke(inputs, config), lock
-
-
-def _format_final_response(final_state: dict) -> str:
-    """Helper to extract the final AI message and dynamically append telemetry."""
-    if not final_state or "messages" not in final_state:
-        return "⚠️ An error occurred: No response was generated."
-
-    last_message_content = final_state["messages"][-1].content
-
-    # LangChain LLMs (like Gemini) sometimes return content as a list of dictionaries
-    if isinstance(last_message_content, list):
-        text_blocks = []
-        for block in last_message_content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text_blocks.append(block.get("text", ""))
-            elif isinstance(block, str):
-                text_blocks.append(block)
-        last_message_text = "\n".join(text_blocks)
-    else:
-        last_message_text = str(last_message_content)
-
-    if settings.agent.show_telemetry:
-        t1 = final_state.get("t1_base_calls", 0)
-        t2 = final_state.get("t2_standard_calls", 0)
-        t3 = final_state.get("t3_frontier_calls", 0)
-
-        # only append if at least one call was made during the session
-        if t1 > 0 or t2 > 0 or t3 > 0:
-            telemetry_footer = f"\n\n---\n📊 *Telemetry: T1: {t1} | T2: {t2} | T3: {t3}*"
-            last_message_text += telemetry_footer
-
-    return last_message_text
-
-
-# ==========================================
 # Core Execution & Interaction
 # ==========================================
 
 
 def is_agent_busy(thread_id: str) -> bool:
-    """
-    Queries the LangGraph checkpointer to see if the agent is currently
-    computing a task for this thread.
-    Note: This is now strictly a fallback mechanism if Redis is offline.
+    """Queries the LangGraph checkpointer to see if the agent is currently computing a task.
+
+    State Transitions: Strictly acts as a fallback mechanism if Redis lock verification
+    is offline by querying the persistent graph state.
+    Exceptions: Returns False if state retrieval fails or thread does not exist.
     """
     try:
         state = agent_app.get_state({"configurable": {"thread_id": thread_id}})
@@ -302,10 +188,13 @@ def is_agent_busy(thread_id: str) -> bool:
         return False
 
 
-def process_ci_trigger(ci_trigger: dict, io_deps: IODependencies):
-    """
-    Background Task: Stateless, isolated execution of the Agentic CI pipeline.
-    Invokes the Pull Request Sub-Graph directly without polluting conversational memory.
+def process_ci_trigger(ci_trigger: dict[str, Any], io_deps: IODependencies) -> None:
+    """Background Task: Stateless, isolated execution of the Agentic CI pipeline.
+
+    State Transitions: Invokes the Pull Request Sub-Graph directly without polluting
+    conversational memory. Resolves workspace paths and fetches commit metadata.
+    Exceptions: Aborts execution if target workspace paths or commit SHAs cannot be
+    resolved, logging errors without raising exceptions to the background task runner.
     """
     logger.info(f"Processing CI Trigger: {ci_trigger}")
 
@@ -375,18 +264,21 @@ def process_ci_trigger(ci_trigger: dict, io_deps: IODependencies):
 
 
 class LockHeartbeat(threading.Thread):
-    """
-    Watchdog Thread: Periodically extends a Redis lock's TTL to prevent
-    timeouts during long-running LangGraph executions.
+    """Watchdog Thread: Periodically extends a Redis lock's TTL during execution.
+
+    Architectural Intent: Prevents Redis locks from expiring prematurely during
+    long-running LLM inference or container sandbox execution cycles.
     """
 
-    def __init__(self, lock, extend_interval=60):
+    def __init__(self, lock: object, extend_interval: int = 60) -> None:
+        """Initializes the watchdog thread with a target lock and refresh interval."""
         super().__init__(daemon=True)
         self.lock = lock
         self.extend_interval = extend_interval
         self.stop_event = threading.Event()
 
-    def run(self):
+    def run(self) -> None:
+        """Continuously reacquires the lock TTL until signaled to stop."""
         # Loop until the stop_event is set or the interval passes
         while not self.stop_event.wait(self.extend_interval):
             try:
@@ -401,7 +293,8 @@ class LockHeartbeat(threading.Thread):
                 # General network blip. Log and try again next loop.
                 logger.warning(f"Watchdog encountered network error extending lock: {e}")
 
-    def stop(self):
+    def stop(self) -> None:
+        """Signals the loop to terminate immediately."""
         self.stop_event.set()
 
 
@@ -411,10 +304,13 @@ def process_agent_message(
     thread_id: str,
     io_deps: IODependencies | None = None,
     lock: object | None = None,
-):
-    """
-    The main execution wrapper. Feeds Telegram messages into the LangGraph state machine,
-    handles breakpoint resumptions, and streams the AI's response back to Telegram.
+) -> None:
+    """The main execution wrapper feeding Telegram messages into the LangGraph state machine.
+
+    State Transitions: Handles breakpoint resumptions, manages Redis lock watchdogs,
+    updates telemetry callbacks, and streams AI text responses back to Telegram.
+    Exceptions: Catches graph execution failures, sends user error notifications,
+    and guarantees lock release and state cleanup in the finally block.
     """
     logger.info(f"Executing graph for thread {thread_id}: {text}")
 
@@ -499,13 +395,340 @@ def process_agent_message(
             logger.error(f"Failed to flush global Langfuse queue: {e}")
 
 
+def _invoke_agent_graph(
+    text: str,
+    config: dict[str, Any],
+    current_state: Any,
+    io_deps: IODependencies,
+    lock: object | None,
+) -> tuple[dict[str, Any], object | None]:
+    """Handles the branching logic of invoking the graph (new, resume, or recover).
+
+    Architectural Intent: Manages state transitions and auto-recovers thread locks
+    when node execution previously failed or got stuck in a dirty state.
+    """
+    if current_state.next:
+        pending_node = current_state.next[0]
+
+        # if the graph is stuck on an execution node due to a previous crash, transparently
+        # reset the thread so the new command isn't trapped in a dirty state.
+        if pending_node not in ["human_clarify_node", "human_pr_node"]:
+            thread_id = config["configurable"]["thread_id"]
+            logger.warning(f"Thread {thread_id} stuck at {pending_node}. Auto-recovering.")
+
+            # release lock on the broken thread
+            try:
+                clean_old_config = {"configurable": {"thread_id": thread_id}}
+                agent_app.update_state(clean_old_config, {"is_busy": False})
+            except Exception as e:
+                logger.warning(f"Error clearing broken thread state: {e}")
+
+            if lock:
+                try:
+                    lock.release()
+                except Exception as e:
+                    logger.warning(f"Error releasing old thread lock: {e}")
+
+            # transparently migrate the user to a clean thread ID
+            chat_id = config["configurable"]["user_id"]
+            new_thread = f"{chat_id}_{int(time.time())}"
+            set_active_thread(chat_id, new_thread, io_deps.redis_client)
+            config["configurable"]["thread_id"] = new_thread
+
+            # engage states and grab the Redis lock for the newly created thread
+            try:
+                clean_new_config = {"configurable": {"thread_id": new_thread}}
+                agent_app.update_state(clean_new_config, {"is_busy": True})
+            except Exception as e:
+                logger.warning(f"Error setting is_busy state: {e}")
+
+            if io_deps.redis_client:
+                # Set thread_local=False so background tasks can release the lock
+                lock = io_deps.redis_client.lock(
+                    f"agent_lock_{new_thread}", timeout=300, thread_local=False
+                )
+                lock.acquire(blocking=False)
+            else:
+                lock = None
+
+            inputs = _build_initial_inputs(text)
+            return agent_app.invoke(inputs, config), lock
+
+        # normal, healthy breakpoint resumption
+        state_update = _build_state_update(text, current_state)
+        state_update["is_busy"] = True
+
+        try:
+            # Use clean config to avoid checkpoint_id or serialization issues
+            clean_resume_config = {
+                "configurable": {"thread_id": config["configurable"]["thread_id"]}
+            }
+            agent_app.update_state(clean_resume_config, state_update, as_node=pending_node)
+        except Exception as e:
+            logger.error(f"Error updating state during resumption: {e}")
+
+        return agent_app.invoke(None, config), lock
+
+    # initialize a brand new instruction
+    try:
+        clean_config = {"configurable": {"thread_id": config["configurable"]["thread_id"]}}
+        agent_app.update_state(clean_config, {"is_busy": True})
+    except Exception as e:
+        logger.error(f"Error setting is_busy state for new instruction: {e}")
+
+    inputs = _build_initial_inputs(text)
+    return agent_app.invoke(inputs, config), lock
+
+
+def _build_initial_inputs(text: str) -> dict[str, Any]:
+    """Constructs the initial state dictionary payload for a new thread.
+
+    Architectural Intent: Initializes telemetry counters, execution retry trackers,
+    and clarification state variables for a fresh user instruction.
+    """
+    return {
+        "messages": [HumanMessage(content=text)],
+        "original_instruction": text,
+        "t1_base_calls": 0,
+        "t2_standard_calls": 0,
+        "t3_frontier_calls": 0,
+        "execution_retry_count": 0,
+        "latest_traceback_error": None,
+        "clarification_question": None,
+        "disambiguation_options": None,
+        "is_aborted": False,
+        "modified_tex_files": [],
+    }
+
+
+def _build_state_update(text: str, current_state: Any) -> dict[str, Any]:
+    """Determines required state updates when resuming execution from a LangGraph breakpoint.
+
+    Architectural Intent: Handles user cancellation commands and pull request approval
+    responses by parsing natural language inputs against pending checkpoint nodes.
+    """
+    pending_node = current_state.next[0]
+    state_update: dict[str, Any] = {"messages": [HumanMessage(content=text)]}
+
+    cleaned_text = text.strip().lower()
+
+    # Handle natural language escapes and explicit commands to abandon the workflow
+    if cleaned_text in [
+        "abort",
+        "cancel",
+        "stop",
+        "nevermind",
+        "exit",
+        "/cleanup",
+        "/cancel",
+        "/abort",
+    ]:
+        state_update["is_aborted"] = True
+
+    # Check context using the values stored in the paused state
+    elif pending_node in ["human_pr_node", "human_clarify_node"]:
+        if current_state.values.get("pending_pr_url"):
+            state_update["human_approved"] = cleaned_text == "lgtm"
+
+    return state_update
+
+
+def _format_final_response(final_state: dict[str, Any]) -> str:
+    """Extracts the final AI text response from the state and dynamically appends telemetry.
+
+    Architectural Intent: Safely handles list-formatted content blocks returned by
+    certain LLM providers (e.g., Gemini) and appends model tier usage statistics.
+    """
+    if not final_state or "messages" not in final_state:
+        return "⚠️ An error occurred: No response was generated."
+
+    last_message_content = final_state["messages"][-1].content
+
+    # LangChain LLMs (like Gemini) sometimes return content as a list of dictionaries
+    if isinstance(last_message_content, list):
+        text_blocks = []
+        for block in last_message_content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text_blocks.append(block.get("text", ""))
+            elif isinstance(block, str):
+                text_blocks.append(block)
+        last_message_text = "\n".join(text_blocks)
+    else:
+        last_message_text = str(last_message_content)
+
+    if settings.agent.show_telemetry:
+        t1 = final_state.get("t1_base_calls", 0)
+        t2 = final_state.get("t2_standard_calls", 0)
+        t3 = final_state.get("t3_frontier_calls", 0)
+
+        # only append if at least one call was made during the session
+        if t1 > 0 or t2 > 0 or t3 > 0:
+            telemetry_footer = f"\n\n---\n📊 *Telemetry: T1: {t1} | T2: {t2} | T3: {t3}*"
+            last_message_text += telemetry_footer
+
+    return last_message_text
+
+
 # ==========================================
 # Webhook Ingress Routes
 # ==========================================
 
 
-async def _process_telegram_attachment(document: dict, current_text: str) -> str:
-    """Helper to asynchronously download and parse Telegram file attachments."""
+@app.post("/webhook")
+async def telegram_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_telegram_bot_api_secret_token: str | None = Header(None),
+) -> dict[str, str]:
+    """The primary ingress route for Telegram updates.
+
+    State Transitions: Verifies webhook authenticity, whitelists owner chat IDs,
+    processes `/reset` memory commands, and enqueues background processing tasks.
+    Exceptions: Raises HTTPException 401 for unauthorized secret tokens or HTTP 400
+    for malformed JSON payloads.
+    """
+    # Fast-fail security check
+    _verify_telegram_secret(x_telegram_bot_api_secret_token)
+
+    # Parse payload
+    try:
+        payload = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from e
+
+    message = payload.get("message", {})
+    if not message:
+        # Telegram sometimes sends edits or other updates; ignore if not a standard message
+        return {"status": "ignored"}
+
+    # Strict whitelisting
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    expected_chat_id = os.getenv("AUTHORIZED_OWNER_CHAT_ID")
+    if not chat_id or chat_id != expected_chat_id:
+        logger.warning(f"Unauthorized chat ID detected: {chat_id}. Dropping payload.")
+        # Return 200 OK so Telegram doesn't retry the delivery, but silently drops it
+        return {"status": "ok"}
+
+    # Extract text/attachments
+    text = await _extract_message_text(message)
+
+    # Pack dynamic IO clients
+    io_deps = IODependencies(
+        redis_client=getattr(request.app.state, "redis_client", None),
+        chroma_collection=getattr(request.app.state, "chroma_collection", None),
+        docker_client=getattr(request.app.state, "docker_client", None),
+    )
+
+    # Memory management (/reset)
+    if text == "/reset":
+        new_thread = f"{chat_id}_{int(time.time())}"
+        set_active_thread(chat_id, new_thread, io_deps.redis_client)
+        logger.info(f"Memory reset. New thread ID: {new_thread}")
+        # Delegate to background task to prevent blocking the async event loop
+        background_tasks.add_task(
+            send_telegram_message, chat_id, "Memory cleared. Started a fresh session."
+        )
+        return {"status": "ok"}
+
+    current_thread = get_active_thread(chat_id, io_deps.redis_client)
+
+    # Concurrency protection (Redis distributed lock)
+    is_locked = False
+    lock = None
+    if io_deps.redis_client:
+        # Set thread_local=False so background tasks can release the lock
+        lock = io_deps.redis_client.lock(
+            f"agent_lock_{current_thread}", timeout=300, thread_local=False
+        )
+        # blocking=False guarantees an immediate return if the agent
+        # is busy processing another concurrent message
+        if not lock.acquire(blocking=False):
+            is_locked = True
+    else:
+        # Fallback to checking the LangGraph state if Redis is offline
+        is_locked = is_agent_busy(current_thread)
+
+    # Handle active execution interruptions
+    command = text.strip().lower()
+    if is_locked and command in ["/stop", "/abort", "/cancel", "/halt"]:
+        agent_store.put(("abort_signals", current_thread), "abort", {"stop_type": "pause"})
+        logger.info(
+            f"Received manual pause command ({command}) for active thread: {current_thread}"
+        )
+        background_tasks.add_task(
+            send_telegram_message,
+            chat_id,
+            "🛑 Acknowledged. Pausing current task at the next checkpoint...",
+        )
+        return {"status": "ok"}
+
+    if is_locked:
+        logger.info("Agent is busy. Rejecting concurrent command.")
+        # Delegate to background task to prevent blocking the async event loop
+        background_tasks.add_task(
+            send_telegram_message,
+            chat_id,
+            "⏳ I am currently executing a task. Please wait for it to finish.",
+        )
+        return {"status": "ok"}
+
+    # Asynchronous handoff
+    logger.info("Authorized payload accepted. Queuing background task.")
+    background_tasks.add_task(process_agent_message, chat_id, text, current_thread, io_deps, lock)
+
+    # Return immediately to satisfy Telegram's 5-second timeout requirement
+    return {"status": "ok"}
+
+
+def _verify_telegram_secret(secret_token: str | None) -> None:
+    """Verifies the incoming Telegram webhook secret token against environment settings.
+
+    Architectural Intent: Ensures fast-fail security rejection before JSON parsing.
+    Raises an HTTP 401 Unauthorized exception if validation fails.
+    """
+    expected_secret = os.getenv("TELEGRAM_SECRET_TOKEN")
+    if (
+        not expected_secret
+        or not secret_token
+        or not secrets.compare_digest(secret_token, expected_secret)
+    ):
+        logger.warning("Unauthorized access attempt: Invalid or missing Secret Token.")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def _extract_message_text(message: dict[str, Any]) -> str:
+    """Extracts and formats text or captions from an incoming Telegram message.
+
+    Architectural Intent: Routes document attachments for downloading and text
+    extraction while flagging unsupported photo payloads to the user.
+    """
+    text = message.get("text", "").strip()
+    caption = message.get("caption", "").strip()
+
+    if not text and caption:
+        text = caption
+
+    document = message.get("document")
+    photo = message.get("photo")
+
+    if document:
+        return await _process_telegram_attachment(document, text)
+
+    if photo:
+        warning_msg = (
+            "[System Note: Images are not currently supported, please send as a file/document.]"
+        )
+        return f"{text}\n\n{warning_msg}" if text else warning_msg
+
+    return text
+
+
+async def _process_telegram_attachment(document: dict[str, Any], current_text: str) -> str:
+    """Asynchronously downloads and extracts raw text from supported Telegram attachments.
+
+    Architectural Intent: Handles PDF extraction in-memory and gracefully falls back
+    to UTF-8 decoding or system warning notes for unsupported binary formats.
+    """
     file_id = document.get("file_id")
     file_name = document.get("file_name", "attached_file.txt").lower()
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -574,133 +797,19 @@ async def _process_telegram_attachment(document: dict, current_text: str) -> str
     return current_text
 
 
-@app.post("/webhook")
-async def telegram_webhook(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    x_telegram_bot_api_secret_token: str = Header(None),
-):
-    """
-    The primary ingress route for Telegram updates.
-    """
-    # fast-fail security check
-    expected_secret = os.getenv("TELEGRAM_SECRET_TOKEN")
-    if (
-        not expected_secret
-        or not x_telegram_bot_api_secret_token
-        or not secrets.compare_digest(x_telegram_bot_api_secret_token, expected_secret)
-    ):
-        logger.warning("Unauthorized access attempt: Invalid or missing Secret Token.")
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    # parse payload
-    try:
-        payload = await request.json()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail="Invalid JSON") from e
-
-    # extract message details
-    message = payload.get("message", {})
-    if not message:
-        # telegram sometimes sends edits or other updates; ignore if not a standard message
-        return {"status": "ignored"}
-
-    chat_id = str(message.get("chat", {}).get("id", ""))
-    expected_chat_id = os.getenv("AUTHORIZED_OWNER_CHAT_ID")
-
-    # strict whitelisting
-    if not chat_id or chat_id != expected_chat_id:
-        logger.warning(f"Unauthorized chat ID detected: {chat_id}. Dropping payload.")
-        # return 200 OK so Telegram doesn't retry the delivery, but silently drop it
-        return {"status": "ok"}
-
-    text = message.get("text", "").strip()
-    caption = message.get("caption", "").strip()
-
-    # If it's an attachment, Telegram uses 'caption' instead of 'text' for the prompt
-    if not text and caption:
-        text = caption
-
-    document = message.get("document")
-    photo = message.get("photo")
-
-    if document:
-        text = await _process_telegram_attachment(document, text)
-    elif photo:
-        warning_msg = (
-            "[System Note: Images are not currently supported, please send as a file/document.]"
-        )
-        # Append cleanly whether they included a caption or not
-        text = f"{text}\n\n{warning_msg}" if text else warning_msg
-
-    # Pack dynamic IO clients
-    io_deps = IODependencies(
-        redis_client=getattr(request.app.state, "redis_client", None),
-        chroma_collection=getattr(request.app.state, "chroma_collection", None),
-        docker_client=getattr(request.app.state, "docker_client", None),
-    )
-
-    # memory management (/reset)
-    if text == "/reset":
-        new_thread = f"{chat_id}_{int(time.time())}"
-        set_active_thread(chat_id, new_thread, io_deps.redis_client)
-        logger.info(f"Memory reset. New thread ID: {new_thread}")
-        # Delegate to background task to prevent blocking the async event loop
-        background_tasks.add_task(
-            send_telegram_message, chat_id, "Memory cleared. Started a fresh session."
-        )
-        return {"status": "ok"}
-
-    current_thread = get_active_thread(chat_id, io_deps.redis_client)
-
-    # concurrency protection (Redis distributed lock)
-    is_locked = False
-    lock = None
-    if io_deps.redis_client:
-        # Set thread_local=False so background tasks can release the lock
-        lock = io_deps.redis_client.lock(
-            f"agent_lock_{current_thread}", timeout=300, thread_local=False
-        )
-        # blocking=False guarantees an immediate return if the agent
-        # is busy processing another concurrent message
-        if not lock.acquire(blocking=False):
-            is_locked = True
-    else:
-        # Fallback to checking the LangGraph state if Redis is offline
-        is_locked = is_agent_busy(current_thread)
-
-    if is_locked:
-        logger.info("Agent is busy. Rejecting concurrent command.")
-        # Delegate to background task to prevent blocking the async event loop
-        background_tasks.add_task(
-            send_telegram_message,
-            chat_id,
-            "⚠️ I am currently executing a task. Please wait for it to finish.",
-        )
-        return {"status": "ok"}
-
-    # asynchronous handoff
-    logger.info("Authorized payload accepted. Queuing background task.")
-    background_tasks.add_task(
-        process_agent_message,
-        chat_id,
-        text,
-        current_thread,
-        io_deps,
-        lock,
-    )
-
-    # return immediately to satisfy Telegram's 5-second timeout requirement
-    return {"status": "ok"}
-
-
 @app.post("/github/webhook")
 async def github_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
-    x_hub_signature_256: str = Header(None),
-):
-    """Listens for Pull Request events to auto-advance the agent or trigger CI."""
+    x_hub_signature_256: str | None = Header(None),
+) -> dict[str, str]:
+    """Listens for Pull Request events to auto-advance the agent or trigger CI.
+
+    State Transitions: Verifies HMAC signatures, parses Agentic CI triggers or PR
+    lifecycle signals, and queues background processing tasks if the agent is not busy.
+    Exceptions: Raises HTTPException 401 for invalid signatures or HTTP 400 for
+    malformed JSON payloads.
+    """
     payload_body = await request.body()
     if not verify_github_signature(payload_body, x_hub_signature_256):
         logger.warning("Unauthorized access attempt: Invalid GitHub Signature.")
@@ -728,10 +837,10 @@ async def github_webhook(
     # 2. PR Lifecycle Parsing (Merge / Abort)
     action_signal = parse_github_pr_action(payload)
     if action_signal:
-        chat_id = os.getenv("AUTHORIZED_OWNER_CHAT_ID")
+        chat_id = os.getenv("AUTHORIZED_OWNER_CHAT_ID", "")
         thread_id = get_active_thread(chat_id, io_deps.redis_client)
 
-        # concurrency protection (Redis distributed lock)
+        # Concurrency protection (Redis distributed lock)
         is_locked = False
         lock = None
         if io_deps.redis_client:

@@ -33,11 +33,14 @@ def mock_settings(mocker):
 
 def test_get_llm_success_ollama_base(mocker, mock_settings):
     """Green Path: Successfully initializes an Ollama local client."""
+    # 1. Setup Mock Environment
     mock_settings(Provider.OLLAMA, "qwen2.5:32b", "base")
     mock_chat = mocker.patch("langchain_ollama.ChatOllama")
 
+    # 2. Execute
     llm = get_llm("base", "test_model")
 
+    # 3. Assertions
     assert llm is not None
     mock_chat.assert_called_once()
     assert mock_chat.call_args[1]["model"] == "qwen2.5:32b"
@@ -45,12 +48,15 @@ def test_get_llm_success_ollama_base(mocker, mock_settings):
 
 def test_get_llm_success_deepseek_standard(mocker, mock_settings):
     """Green Path: Successfully initializes DeepSeek via the OpenAI client."""
+    # 1. Setup Mock Environment
     mock_settings(Provider.DEEPSEEK, "deepseek-chat", "standard")
     mocker.patch("os.getenv", return_value="sk-deepseek")
     mock_chat = mocker.patch("langchain_openai.ChatOpenAI")
 
+    # 2. Execute
     llm = get_llm("standard", "test_model")
 
+    # 3. Assertions
     assert llm is not None
     mock_chat.assert_called_once()
     assert mock_chat.call_args[1]["openai_api_base"] == "https://api.deepseek.com/v1"
@@ -58,12 +64,15 @@ def test_get_llm_success_deepseek_standard(mocker, mock_settings):
 
 def test_get_llm_success_openai_standard(mocker, mock_settings):
     """Green Path: Successfully initializes an OpenAI client."""
+    # 1. Setup Mock Environment
     mock_settings(Provider.OPENAI, "gpt-4o", "standard")
     mocker.patch("os.getenv", return_value="sk-12345")
     mock_chat = mocker.patch("langchain_openai.ChatOpenAI")
 
+    # 2. Execute
     llm = get_llm("standard", "test_model")
 
+    # 3. Assertions
     assert llm is not None
     mock_chat.assert_called_once()
     assert mock_chat.call_args[1]["openai_api_key"] == "sk-12345"
@@ -71,12 +80,15 @@ def test_get_llm_success_openai_standard(mocker, mock_settings):
 
 def test_get_llm_success_anthropic_frontier(mocker, mock_settings):
     """Green Path: Successfully initializes Anthropic."""
+    # 1. Setup Mock Environment
     mock_settings(Provider.ANTHROPIC, "claude-3-7", "frontier")
     mocker.patch("os.getenv", return_value="sk-ant-123")
     mock_chat = mocker.patch("langchain_anthropic.ChatAnthropic")
 
+    # 2. Execute
     llm = get_llm("frontier", "test_model")
 
+    # 3. Assertions
     assert llm is not None
     mock_chat.assert_called_once()
     assert mock_chat.call_args[1]["model"] == "claude-3-7"
@@ -84,13 +96,16 @@ def test_get_llm_success_anthropic_frontier(mocker, mock_settings):
 
 def test_get_llm_success_gemini_frontier(mocker, mock_settings):
     """Green Path: Successfully initializes a Gemini client with temperature constraints."""
+    # 1. Setup Mock Environment
     mock_settings(Provider.GEMINI, "gemini-2.5-pro", "frontier")
     mocker.patch("os.getenv", return_value="AIza-12345")
     mock_chat = mocker.patch("langchain_google_genai.ChatGoogleGenerativeAI")
 
     # Pass exactly 0.0 to test the gemini_temp = max(temperature, 0.1) safeguard
+    # 2. Execute
     llm = get_llm("frontier", "test_model", temperature=0.0)
 
+    # 3. Assertions
     assert llm is not None
     mock_chat.assert_called_once()
     # Verify the temperature floor successfully overrode the 0.0 request
@@ -99,36 +114,45 @@ def test_get_llm_success_gemini_frontier(mocker, mock_settings):
 
 def test_get_llm_fallback_missing_api_key(mocker, mock_settings):
     """Edge Path: Returns None gracefully if the API key is missing."""
+    # 1. Setup Mock Environment
     mock_settings(Provider.OPENAI, "gpt-4o", "standard")
     mocker.patch("os.getenv", return_value=None)  # Simulate missing key
 
+    # 2. Execute
     llm = get_llm("standard", "test_model")
 
+    # 3. Assertions
     assert llm is None
 
 
 def test_get_llm_fallback_initialization_crash(mocker, mock_settings):
     """Edge Path: Returns None gracefully if the underlying LangChain client crashes."""
+    # 1. Setup Mock Environment
     mock_settings(Provider.OLLAMA, "qwen", "base")
     # Simulate an unexpected crash from the library or socket
     mocker.patch(
         "langchain_ollama.ChatOllama", side_effect=Exception("Library missing or socket dead")
     )
 
+    # 2. Execute
     llm = get_llm("base", "test_model")
 
+    # 3. Assertions
     assert llm is None
 
 
 def test_get_llm_error_invalid_model(mocker):
     """Red Path: Raises ValueError if the requested model key does not exist."""
+    # 1. Setup Mock Environment
     mock_tier_config = mocker.Mock()
     mock_tier_config.default_model = "default_key"
     mock_tier_config.available_models = {}
 
     mocker.patch("src.workspace_agent.llm.factory.getattr", return_value=mock_tier_config)
 
+    # 2. Execute
     with pytest.raises(ValueError) as exc:
         get_llm("standard", requested_model_key="missing_key")
 
+    # 3. Assertions
     assert "not configured" in str(exc.value)

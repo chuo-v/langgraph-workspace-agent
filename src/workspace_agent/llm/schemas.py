@@ -2,16 +2,24 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+__all__ = ["RoutingDecision"]
+
 # ==========================================
 # Structured Output Schemas
 # ==========================================
 
 
 class RoutingDecision(BaseModel):
-    """
-    Defines the exact JSON structure the Tier 1 model must return
+    """Defines the exact JSON structure the Tier 1 model must return
     during the parse_intent_node phase. Uses Structured Chain-of-Thought
     to prevent cognitive overload during disambiguation.
+
+    State Transitions: Drives the conditional edge routing logic to transition
+    the state either to a conversational flow, a read-only workflow, or an
+    active workspace operation workflow.
+
+    Exceptions: Will implicitly raise a Pydantic ValidationError if the underlying
+    LLM output fails to match constraints (e.g., bounds for router_confidence).
     """
 
     # force the model to extract entities first

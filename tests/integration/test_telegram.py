@@ -17,19 +17,23 @@ from src.workspace_agent.integrations.telegram import (
 
 def test_convert_markdown_to_telegram_html_success_standard():
     """Green Path: Verifies custom Markdown to Telegram HTML conversion & escaping."""
+    # 1. Setup Mock Environment
     markdown_text = (
         "This is **bold** and *italic*. Here is `inline code` and a [link](https://test.com)."
     )
-    html_text = _convert_markdown_to_telegram_html(markdown_text)
+    code_block = "```python\nprint('hello <world>')\n```"
 
+    # 2. Execute
+    html_text = _convert_markdown_to_telegram_html(markdown_text)
+    html_code = _convert_markdown_to_telegram_html(code_block)
+
+    # 3. Assertions
     assert "<b>bold</b>" in html_text
     assert "<i>italic</i>" in html_text
     assert "<code>inline code</code>" in html_text
     assert '<a href="https://test.com">link</a>' in html_text
 
     # Verify code block escaping (protecting raw HTML inside code blocks)
-    code_block = "```python\nprint('hello <world>')\n```"
-    html_code = _convert_markdown_to_telegram_html(code_block)
     assert "&lt;world&gt;" in html_code
     assert "<pre>print" in html_code
 
@@ -41,13 +45,16 @@ def test_convert_markdown_to_telegram_html_success_standard():
 
 def test_chunk_message_success_standard():
     """Green Path: Verifies message chunking respects limits and breaks gracefully at boundaries."""
+    # 1. Setup Mock Environment
     # Create a string slightly over 4000 characters, with a clean paragraph break at 3000
     part1 = "A" * 3000 + "\n\n"
     part2 = "B" * 1500
     long_text = part1 + part2
 
+    # 2. Execute
     chunks = _chunk_message(long_text, max_length=4000)
 
+    # 3. Assertions
     assert len(chunks) == 2
     assert chunks[0] == "A" * 3000
     assert chunks[1] == "B" * 1500
@@ -55,11 +62,14 @@ def test_chunk_message_success_standard():
 
 def test_chunk_message_fallback_hard_split():
     """Edge Path: Verifies fallback to hard character split for massive unbroken strings."""
+    # 1. Setup Mock Environment
     # create a massive string with ZERO spaces or newlines
     long_text = "A" * 5000
 
+    # 2. Execute
     chunks = _chunk_message(long_text, max_length=MAX_MESSAGE_LENGTH)
 
+    # 3. Assertions
     assert len(chunks) == 2
     # verify the hard split occurred exactly at the threshold
     assert len(chunks[0]) == MAX_MESSAGE_LENGTH
@@ -67,7 +77,7 @@ def test_chunk_message_fallback_hard_split():
 
 
 # ==========================================
-# Component: send_telegram_message
+# Workflow: Telegram Message Dispatch
 # ==========================================
 
 
@@ -85,7 +95,7 @@ def test_send_telegram_message_success_standard(mock_post, mock_getenv):
     mock_response = httpx.Response(200, request=httpx.Request("POST", "https://fake.url"))
     mock_post.return_value = mock_response
 
-    # 2. Execute with raw Markdown
+    # 2. Execute
     send_telegram_message("12345", "Hello, **Agent**!")
 
     # 3. Assertions
@@ -119,7 +129,7 @@ def test_send_telegram_message_fallback_handling(mock_post, mock_getenv, caplog)
     mock_response = httpx.Response(400, request=httpx.Request("POST", "https://fake.url"))
     mock_post.return_value = mock_response
 
-    # 2. Execute within the pytest logger capture context
+    # 2. Execute
     with caplog.at_level(logging.WARNING):
         send_telegram_message("12345", "Malformed *Markdown")
 
@@ -135,14 +145,17 @@ def test_send_telegram_message_error_network(mock_post, mock_getenv, caplog):
     Red Path: Validates that catastrophic network errors (e.g., DNS failure, timeout)
     are caught and logged without crashing the worker thread.
     """
+    # 1. Setup Mock Environment
     mock_getenv.return_value = "fake_bot_token"
 
     # Simulate a severe network drop instead of a clean HTTP error
     mock_post.side_effect = httpx.ConnectError("Network is unreachable")
 
+    # 2. Execute
     with caplog.at_level(logging.ERROR):
         send_telegram_message("12345", "Test message")
 
+    # 3. Assertions
     # Verify the broad Exception block caught the network drop
     assert "Network error sending to Telegram" in caplog.text
     assert "Network is unreachable" in caplog.text

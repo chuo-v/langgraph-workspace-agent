@@ -1,4 +1,4 @@
-# 02. Configuration
+# 03. Configuration
 
 The LangGraph Workspace Agent is designed to be highly secure and cost-efficient. To achieve this, it relies on strict configuration parameters defined in your `config.yaml` file. This guide explains how to configure your operational settings, map your repositories, define your LLM routing tiers, and enforce security boundaries for the execution sandbox.
 

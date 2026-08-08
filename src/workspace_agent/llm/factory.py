@@ -1,8 +1,16 @@
 import os
+from typing import Any
 
 from src.workspace_agent.core.config import settings
 from src.workspace_agent.core.provider import Provider
 from src.workspace_agent.llm.callbacks import get_langfuse_callback
+
+__all__ = ["get_llm"]
+
+
+# ==========================================
+# LLM Factory Initialization
+# ==========================================
 
 
 def get_llm(
@@ -11,10 +19,23 @@ def get_llm(
     temperature: float = 0.0,
     max_retries: int = 0,
     timeout: float = 120.0,
-):
-    """
-    Dynamically initializes an LLM based on the YAML configuration.
-    `tier_name` should be 'base', 'standard', or 'frontier'.
+) -> Any | None:
+    """Dynamically initializes an LLM based on the YAML configuration.
+
+    Args:
+        tier_name: The target tier to load ('base', 'standard', or 'frontier').
+        requested_model_key: Optional specific model key within the tier.
+            Defaults to the tier's default model.
+        temperature: Sampling temperature for generation.
+        max_retries: Maximum number of retry attempts for API calls.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        An initialized LangChain chat model instance, or None if initialization
+        fails or API keys are missing.
+
+    Raises:
+        ValueError: If the requested model key is not configured in the specified tier.
     """
     tier_config = getattr(settings.llm, f"{tier_name}_tier")
     model_key = requested_model_key or tier_config.default_model
@@ -31,9 +52,7 @@ def get_llm(
     llm = None
 
     try:
-        # -----------------------------------------
-        # Ollama (Local)
-        # -----------------------------------------
+        # === Ollama (Local) ===
         if provider == Provider.OLLAMA:
             from langchain_ollama import ChatOllama  # noqa: PLC0415
 
@@ -46,9 +65,7 @@ def get_llm(
                 callbacks=callbacks,
             )
 
-        # -----------------------------------------
-        # Anthropic Claude
-        # -----------------------------------------
+        # === Anthropic Claude ===
         elif provider == Provider.ANTHROPIC:
             api_key = os.getenv("ANTHROPIC_API_KEY")
             if api_key:
@@ -63,9 +80,7 @@ def get_llm(
                     callbacks=callbacks,
                 )
 
-        # -----------------------------------------
-        # Google Gemini
-        # -----------------------------------------
+        # === Google Gemini ===
         elif provider == Provider.GEMINI:
             api_key = os.getenv("GEMINI_API_KEY")
             if api_key:
@@ -81,9 +96,7 @@ def get_llm(
                     callbacks=callbacks,
                 )
 
-        # -----------------------------------------
-        # OpenAI
-        # -----------------------------------------
+        # === OpenAI ===
         elif provider == Provider.OPENAI:
             api_key = os.getenv("OPENAI_API_KEY")
             if api_key:
@@ -98,9 +111,7 @@ def get_llm(
                     callbacks=callbacks,
                 )
 
-        # -----------------------------------------
-        # DeepSeek
-        # -----------------------------------------
+        # === DeepSeek ===
         elif provider == Provider.DEEPSEEK:
             api_key = os.getenv("DEEPSEEK_API_KEY")
             if api_key:

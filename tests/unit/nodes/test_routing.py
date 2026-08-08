@@ -20,9 +20,14 @@ from src.workspace_agent.orchestrator.router import TIER_BASE
 
 def test_extract_tier_command_success_case_insensitive():
     """Green Path: Handles weird casing."""
+    # 1. Setup Mock Environment (N/A - Pure Function)
+
+    # 2. Execute
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
         "/USE:STANDARD execute the script"
     )
+
+    # 3. Assertions
     assert has_frontier is False
     assert has_standard is True
     assert req_model is None
@@ -31,9 +36,14 @@ def test_extract_tier_command_success_case_insensitive():
 
 def test_extract_tier_command_success_frontier_prefix():
     """Green Path: Frontier command at the beginning."""
+    # 1. Setup Mock Environment (N/A)
+
+    # 2. Execute
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
         "/use:frontier do a security audit"
     )
+
+    # 3. Assertions
     assert has_frontier is True
     assert has_standard is False
     assert req_model is None
@@ -42,9 +52,14 @@ def test_extract_tier_command_success_frontier_prefix():
 
 def test_extract_tier_command_success_middle():
     """Green Path: Command buried in the middle with awkward spacing."""
+    # 1. Setup Mock Environment (N/A)
+
+    # 2. Execute
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
         "in langgraph_workspace_agent_test_arena  /use:frontier   change the title"
     )
+
+    # 3. Assertions
     assert has_frontier is True
     assert has_standard is False
     assert req_model is None
@@ -53,9 +68,14 @@ def test_extract_tier_command_success_middle():
 
 def test_extract_tier_command_success_model_override():
     """Green Path: Successfully parses dynamic model override keys."""
+    # 1. Setup Mock Environment (N/A)
+
+    # 2. Execute
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
         "/use:qwen_local summarize this"
     )
+
+    # 3. Assertions
     assert has_frontier is False
     assert has_standard is False
     assert req_model == "qwen_local"
@@ -64,9 +84,14 @@ def test_extract_tier_command_success_model_override():
 
 def test_extract_tier_command_success_standard_suffix():
     """Green Path: Standard command at the end."""
+    # 1. Setup Mock Environment (N/A)
+
+    # 2. Execute
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
         "change the log level /use:standard"
     )
+
+    # 3. Assertions
     assert has_frontier is False
     assert has_standard is True
     assert req_model is None
@@ -84,9 +109,14 @@ def test_extract_tier_command_fallback_empty():
 
 def test_extract_tier_command_error_missing():
     """Red Path: No command present."""
+    # 1. Setup Mock Environment (N/A)
+
+    # 2. Execute
     clean, has_frontier, has_standard, req_model = _extract_tier_command(
         "execute the script normally"
     )
+
+    # 3. Assertions
     assert has_frontier is False
     assert has_standard is False
     assert req_model is None
@@ -100,6 +130,7 @@ def test_extract_tier_command_error_missing():
 
 def test_invoke_escalating_router_fallback_timeout(mocker):
     """Edge Path: Router isolates blocking requests and escalates cleanly on timeout."""
+    # 1. Setup Mock Environment
     # Force the router timeout to be effectively zero so it instantly fails
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.routing.settings.agent.router_timeout_seconds", 0.01
@@ -119,10 +150,12 @@ def test_invoke_escalating_router_fallback_timeout(mocker):
         "src.workspace_agent.orchestrator.nodes.routing.get_intent_router", return_value=mock_llm
     )
 
+    # 2. Execute
     decision, latest_error = _invoke_escalating_router(
         {"instruction": "Test Prompt", "recent_context": ""}, TIER_BASE
     )
 
+    # 3. Assertions
     # Verify the thread executor safely detached and returned the timeout error
     assert decision is None
     assert "timed out after" in latest_error
@@ -135,6 +168,7 @@ def test_invoke_escalating_router_fallback_timeout(mocker):
 
 def test_parse_intent_node_success_forces_model(mocker):
     """Green Path: Verifies parsing a model command translates into state and scrubs instruction."""
+    # 1. Setup Mock Environment
     mock_decision = mocker.Mock()
     mock_decision.intent_category = "workspace_operation"
     mock_decision.inferred_workspace = None
@@ -148,14 +182,18 @@ def test_parse_intent_node_success_forces_model(mocker):
     )
 
     state = {"original_instruction": "generate report /use:gemini_pro"}
+
+    # 2. Execute
     result = parse_intent_node(state)
 
+    # 3. Assertions
     assert result["requested_model"] == "gemini_pro"
     assert result["original_instruction"] == "generate report"
 
 
 def test_parse_intent_node_success_forces_tier(mocker):
     """Green Path: Verifies that parsing a manual command translates into state flags."""
+    # 1. Setup Mock Environment
     mock_decision = mocker.Mock()
     mock_decision.intent_category = "workspace_operation"
     mock_decision.inferred_workspace = None
@@ -169,17 +207,17 @@ def test_parse_intent_node_success_forces_tier(mocker):
         return_value=(mock_decision, None),
     )
 
-    # 1. Test the command
     state_standard = {"original_instruction": "/use:standard optimize the script"}
-    result_standard = parse_intent_node(state_standard)
+    state_frontier = {"original_instruction": "/use:frontier rewrite the core engine"}
 
+    # 2. Execute
+    result_standard = parse_intent_node(state_standard)
+    result_frontier = parse_intent_node(state_frontier)
+
+    # 3. Assertions
     assert result_standard["force_standard_tier"] is True
     assert result_standard["force_frontier_tier"] is False
     assert result_standard["original_instruction"] == "optimize the script"
-
-    # 2. Test the command
-    state_frontier = {"original_instruction": "/use:frontier rewrite the core engine"}
-    result_frontier = parse_intent_node(state_frontier)
 
     assert result_frontier["force_standard_tier"] is False
     assert result_frontier["force_frontier_tier"] is True
@@ -191,6 +229,7 @@ def test_parse_intent_node_success_sliding_window(mocker):
     Green Path: parse_intent_node successfully injects recent conversation
     history into the Tier 1 routing prompt for follow-up context.
     """
+    # 1. Setup Mock Environment
     # mock the structured output router decision
     mock_router = mocker.Mock()
     mock_decision = mocker.Mock()
@@ -216,8 +255,10 @@ def test_parse_intent_node_success_sliding_window(mocker):
         ],
     }
 
+    # 2. Execute
     parse_intent_node(state)
 
+    # 3. Assertions
     # Extract the payload dictionary sent to the chain
     prompt_sent = mock_router.invoke.call_args[0][0]
     recent_context = prompt_sent["recent_context"]
@@ -231,6 +272,7 @@ def test_parse_intent_node_success_sliding_window_truncation(mocker):
     """
     Green Path: Verifies that extremely long conversational messages are aggressively truncated.
     """
+    # 1. Setup Mock Environment
     mock_router = mocker.Mock()
     mock_decision = mocker.Mock()
     mock_decision.intent_category = "conversational"
@@ -247,8 +289,10 @@ def test_parse_intent_node_success_sliding_window_truncation(mocker):
         "messages": [AIMessage(content="Hello"), HumanMessage(content=long_content)],
     }
 
+    # 2. Execute
     parse_intent_node(state)
 
+    # 3. Assertions
     # Extract the payload dictionary sent to the chain
     prompt_sent = mock_router.invoke.call_args[0][0]
     recent_context = prompt_sent["recent_context"]
@@ -265,6 +309,7 @@ def test_parse_intent_node_success_fast_path_conversational(mocker):
     Green Path: Verifies that simple decline keywords bypass the router and return conversational
     intent.
     """
+    # 1. Setup Mock Environment
     # mock the escalating router to crash if called, proving the fast path safely bypassed it
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.routing._invoke_escalating_router",
@@ -276,8 +321,10 @@ def test_parse_intent_node_success_fast_path_conversational(mocker):
         "messages": [HumanMessage(content="No.")],
     }
 
+    # 2. Execute
     result = parse_intent_node(state)
 
+    # 3. Assertions
     assert result["intent_category"] == "conversational"
     assert result["router_confidence"] == 1.0
     assert result["t1_base_calls"] == 0
@@ -288,6 +335,7 @@ def test_parse_intent_node_success_latest_human_message_override(mocker):
     Green Path: Verifies that the latest human conversational message correctly
     overrides the original_instruction to prevent task loops.
     """
+    # 1. Setup Mock Environment
     mock_router = mocker.Mock()
     mock_decision = mocker.Mock()
     mock_decision.intent_category = "conversational"
@@ -312,8 +360,10 @@ def test_parse_intent_node_success_latest_human_message_override(mocker):
         ],
     }
 
+    # 2. Execute
     parse_intent_node(state)
 
+    # 3. Assertions
     # Extract the payload dictionary sent to the chain
     prompt_sent = mock_router.invoke.call_args[0][0]
 
@@ -326,6 +376,7 @@ def test_parse_intent_node_fallback_context_missing_trap(mocker):
     Edge Path: Verifies that if the LLM flags missing context, the node
     traps the clarification question and safely nullifies the target path.
     """
+    # 1. Setup Mock Environment
     mock_decision = mocker.Mock()
     mock_decision.intent_category = "workspace_operation"
     mock_decision.inferred_workspace = "test_arena"
@@ -342,8 +393,11 @@ def test_parse_intent_node_fallback_context_missing_trap(mocker):
     )
 
     state = {"original_instruction": "fix the bug in the test arena"}
+
+    # 2. Execute
     result = parse_intent_node(state)
 
+    # 3. Assertions
     # Verify the trap successfully injected the question into the state
     assert result["clarification_question"] == "Which specific file do you want to edit?"
 
@@ -356,6 +410,7 @@ def test_parse_intent_node_fallback_ignores_system_traps(mocker):
     Edge Path: Verifies that system-injected rejection or error messages
     are safely bypassed when dynamically extracting the latest human instruction.
     """
+    # 1. Setup Mock Environment
     mock_router = mocker.Mock()
     mock_decision = mocker.Mock()
     mock_decision.intent_category = "workspace_operation"
@@ -381,8 +436,10 @@ def test_parse_intent_node_fallback_ignores_system_traps(mocker):
         ],
     }
 
+    # 2. Execute
     parse_intent_node(state)
 
+    # 3. Assertions
     # Extract the payload dictionary sent to the chain
     prompt_sent = mock_router.invoke.call_args[0][0]
 
@@ -392,6 +449,7 @@ def test_parse_intent_node_fallback_ignores_system_traps(mocker):
 
 def test_parse_intent_node_error_escalation_failure(mocker):
     """Red Path: parse_intent_node aborts safely if all router tiers fail completely."""
+    # 1. Setup Mock Environment
     # mock the escalating router to return None (meaning it exhausted all tiers)
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.routing._invoke_escalating_router",
@@ -399,8 +457,11 @@ def test_parse_intent_node_error_escalation_failure(mocker):
     )
 
     state = {"original_instruction": "do something"}
+
+    # 2. Execute
     result = parse_intent_node(state)
 
+    # 3. Assertions
     # verify the workflow safely aborts and formats the error
     assert result.get("is_aborted") is True
     assert "Router Escalation Failed" in result["messages"][0].content
@@ -418,6 +479,7 @@ def test_human_node_success_strict_noop():
     It must never mutate, inject, or alter the graph state, as its only purpose
     is to trigger a LangGraph interrupt.
     """
+    # 1. Setup Mock Environment
     complex_state = {
         "messages": ["msg1", "msg2"],
         "workspace_absolute_path": "/tmp/safe",
@@ -426,9 +488,10 @@ def test_human_node_success_strict_noop():
         "force_frontier_tier": True,
     }
 
-    # Execute the node
+    # 2. Execute
     result = human_node(complex_state)
 
+    # 3. Assertions
     # It must return an empty state delta, proving it introduces absolutely zero
     # side-effects to the graph.
     assert result == {}, (
@@ -439,33 +502,45 @@ def test_human_node_success_strict_noop():
 
 def test_clarification_node_success_with_question():
     """Green Path: Prioritizes rendering the dynamic LLM clarification question."""
+    # 1. Setup Mock Environment
     state = {
         "clarification_question": "Do you want light or dark mode?",
         "disambiguation_options": ["light", "dark"],
     }
+
+    # 2. Execute
     result = clarification_node(state)
 
+    # 3. Assertions
     assert "Question from Agent" in result["messages"][0].content
     assert "dark mode" in result["messages"][0].content
 
 
 def test_clarification_node_fallback_legacy_files():
     """Edge Path: Renders legacy file selection if only options are provided."""
+    # 1. Setup Mock Environment
     state = {
         "clarification_question": None,
         "disambiguation_options": ["/src/main.py", "/tests/main.py"],
     }
+
+    # 2. Execute
     result = clarification_node(state)
 
+    # 3. Assertions
     assert "Multiple matching files found" in result["messages"][0].content
     assert "/src/main.py" in result["messages"][0].content
 
 
 def test_clarification_node_error_workspace_ambiguous():
     """Red Path: Triggers global workspace error if no question or options exist."""
+    # 1. Setup Mock Environment
     state = {"clarification_question": None, "disambiguation_options": None}
+
+    # 2. Execute
     result = clarification_node(state)
 
+    # 3. Assertions
     assert "Ambiguous Workspace Request" in result["messages"][0].content
 
 
@@ -476,6 +551,7 @@ def test_clarification_node_error_workspace_ambiguous():
 
 def test_conversational_reply_node_success_standard(mocker):
     """Green Path: Conversational node successfully invokes the LLM without tools."""
+    # 1. Setup Mock Environment
     mock_llm = mocker.Mock()
     mock_llm.invoke.return_value = AIMessage(content="Hello there!")
     mocker.patch(
@@ -484,8 +560,11 @@ def test_conversational_reply_node_success_standard(mocker):
     )
 
     state = {"messages": [HumanMessage(content="Hi")], "t1_base_calls": 0}
+
+    # 2. Execute
     result = conversational_reply_node(state)
 
+    # 3. Assertions
     assert result["messages"][0].content == "Hello there!"
     assert result["t1_base_calls"] == 1
     assert result["is_busy"] is False
@@ -498,6 +577,7 @@ def test_conversational_reply_node_success_standard(mocker):
 
 def test_cleanup_workflow_node_success_hygiene():
     """Green Path: cleanup_workflow_node wipes all dangling operational state variables."""
+    # 1. Setup Mock Environment
     dirty_state = {
         "is_aborted": True,
         "active_agent_branch": "agent/update-123",
@@ -509,8 +589,10 @@ def test_cleanup_workflow_node_success_hygiene():
         "requested_model": "gemini_pro",
     }
 
+    # 2. Execute
     result = cleanup_workflow_node(dirty_state)
 
+    # 3. Assertions
     assert result["is_aborted"] is False
     assert result["active_agent_branch"] is None
     assert result["pending_pr_url"] is None
@@ -524,6 +606,7 @@ def test_cleanup_workflow_node_success_hygiene():
 
 def test_cleanup_workflow_node_fallback_git_cleanup_failure(mocker):
     """Edge Path: Ensure Git exceptions during cleanup are trapped and logged."""
+    # 1. Setup Mock Environment
     # force the local branch cleanup helper to throw an exception
     mocker.patch(
         "src.workspace_agent.orchestrator.nodes.routing.cleanup_local_branch",
@@ -537,8 +620,10 @@ def test_cleanup_workflow_node_fallback_git_cleanup_failure(mocker):
         "messages": [HumanMessage(content="Aborting execution")],
     }
 
+    # 2. Execute
     result = cleanup_workflow_node(state)
 
+    # 3. Assertions
     # verify the state was still successfully cleaned up despite the Git failure
     assert result["is_aborted"] is False
     assert result["active_agent_branch"] is None

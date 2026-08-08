@@ -1,4 +1,4 @@
-# 01. Deployment Guide
+# 02. Deployment Guide
 
 This guide covers the end-to-end process of setting up the LangGraph Workspace Agent. Because the agent is designed to run asynchronously and receive commands remotely via Telegram, the deployment process requires setting up a persistent host environment, securely configuring API tokens, and establishing a webhook tunnel.
 
@@ -69,7 +69,6 @@ Open the `.env` file and populate the necessary credentials:
 * **Webhook Noise Mitigation:** When setting up the actual webhook on your GitHub repository settings, select **"Let me select individual events"** and check *only* **Pull requests** and **Issue comments**. Leaving it on the default "Send me everything" will cause GitHub to blast payloads for every minor repository event (stars, branch pushes, etc.), which will needlessly flood your agent's server logs.
 
 4. **LLM Tiering:**
-* Define your `BASE_PROVIDER`, `STANDARD_PROVIDER`, and `FRONTIER_PROVIDER` (e.g., `anthropic`, `deepseek`, `gemini`, `openai`).
 * Add your corresponding API keys for the chosen providers (e.g., `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`).
 * *Note:* If you are utilizing a local Ollama instance for your Base Tier, it will rely on your `OLLAMA_API_BASE` and requires no keys.
 

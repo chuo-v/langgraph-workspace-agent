@@ -26,6 +26,11 @@ Tests must be clustered by the feature, workflow, or logical event they represen
 * **Implementation:** Use visual code comments to clearly demarcate these workflow blocks (e.g., `# ========================================== \n# Workflow: Human-in-the-Loop Interrupts`).
 * **Exception:** For pure, stateless utility modules (e.g., simple mathematical helpers or file-system wrappers), structural grouping by function name remains acceptable.
 
+### Internal Test Structure (The AAA Pattern)
+Tests longer than 5 lines of code must strictly decouple the setup of the state from the execution and the evaluation using the **Arrange, Act, Assert (AAA)** pattern.
+* **Why:** It forces a clean separation between environment preparation and the actual logic being tested.
+* **Implementation:** Require a single blank line between each phase, accompanied by visual comments (e.g., `# 1. Setup Mock Environment`, `# 2. Execute`, and `# 3. Assertions`) to clearly guide the reader.
+
 ---
 
 ## 2. Directory-Specific Guidelines
@@ -33,6 +38,7 @@ Tests must be clustered by the feature, workflow, or logical event they represen
 ### `tests/unit/`
 Unit tests validate isolated functions, routing logic, and state transitions without hitting external services or spinning up the sandbox.
 * **Mocking:** All LLM calls, filesystem operations, and Git operations *must* be mocked.
+* **State-Based Assertions:** When testing LangGraph nodes, assert on the *graph state mutations* (e.g., evaluating if `result["human_approved"] is False` or if a specific tool payload was appended) rather than executing literal string-matching on the LLM's non-deterministic text output.
 * **Focus:** Validate the orchestrator's graph routing (`route_after_llm`, `route_after_intent`) and error handling logic.
 
 ### `tests/integration/`

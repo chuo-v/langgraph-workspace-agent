@@ -1,6 +1,6 @@
-# 04. Usage and Workflows
+# 05. Usage and Workflows
 
-Once your background daemon is running and the Telegram webhook is active, the agent acts as your detached, mobile-first engineering partner. This guide covers how to communicate with the agent, explicitly control its reasoning engines, manage conversational threads, and understand the lifecycle of a task from initial prompt to merged code.
+Once your background daemon is running and the Telegram webhook is active, the agent acts as your detached, mobile-first engineering partner. This guide covers how to communicate with the agent, explicitly control its reasoning engines, manage conversational threads, connect external IDEs over MCP, and understand the lifecycle of a task from initial prompt to merged code.
 
 ## Interacting via the Telegram Interface
 
@@ -17,6 +17,8 @@ If your request is ambiguous (e.g., *"Fix the typo in the README"* when you have
 ### 3. File Attachments (Text-Based Context)
 The agent supports reading text-based file attachments directly from the Telegram chat (e.g., logs, scripts, or PDFs) to inject additional context into the execution loop. Note that while the Telegram app allows you to send multiple files at once, **the agent gateway is designed to process only one attached file per prompt turn**. To ensure the attached context binds correctly to your instruction without triggering concurrency locks, please send files individually rather than in a multi-document batch.
 
+---
+
 ## Explicit Execution Tier Overrides
 
 While the router automatically assesses `task_complexity` and escalates to higher tiers autonomously, you maintain ultimate manual control over the compute tier used for the execution loop.
@@ -32,11 +34,47 @@ You can force the agent to use a specific model tier by appending a unified `/us
 
 *(Note: If you do not provide a flag, the system defaults to Tier 1 unless the internal router flags the prompt as highly complex.)*
 
-## Thread Management (The Escape Hatch)
+---
 
-Because the agent uses a Redis checkpointer to maintain deep conversational context, it remembers your previous instructions across multiple turns. However, if the agent becomes confused, hallucinates, or gets stuck in a loop of bad context, you need a way to wipe its short-term memory.
+## Thread Management & Task Control
 
-* **/reset Command:** Sending `/reset` as a message in your Telegram chat acts as an emergency escape hatch. It immediately clears the active LangGraph state and conversational history for your thread. The agent will reply confirming the memory is wiped, allowing you to start a fresh task without any residual context bleeding over from the previous session.
+The agent uses Redis checkpointer states to maintain conversational context, while offering control commands to halt execution or abandon dirty states.
+
+* **/reset Command:** Clears the active LangGraph thread state and short-term memory in Redis. Use this when the agent gets stuck on stale conversation context and you want a fresh chat session without touching local Git branches.
+* **/cleanup Command:** Aborts the active workflow, clears short-term memory, switches the local repository back to the target default branch (e.g., `main`), and forcefully deletes the temporary agent branch (`agent/*`). Use this when you want to abandon a task entirely.
+* **In-Flight Interruption (`/stop`, `/abort`, `/cancel`, `/halt`):** If the agent is currently executing tools in a long-running loop, sending any of these flags in Telegram instructs the orchestrator to pause execution cleanly at the next tool checkpoint without corrupting repository state.
+
+---
+
+## Model Context Protocol (MCP) IDE Integration
+
+In addition to autonomous Telegram ingress, the agent exposes its native tool engine (filesystem operations, sandbox execution, and Git controls) via a standalone **Model Context Protocol (MCP)** server (`src/workspace_agent/tools/mcp_server.py`). This allows external desktop AI tools (e.g., Claude Desktop, Cursor, or Zed) to directly leverage the agent's whitelisted sandbox tools.
+
+### Claude Desktop Configuration
+Add the workspace agent MCP server to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "workspace-agent-tools": {
+      "command": "/path/to/langgraph-workspace-agent/.venv/bin/python",
+      "args": [
+        "-m",
+        "src.workspace_agent.tools.mcp_server"
+      ],
+      "env": {
+        "PYTHONPATH": "/path/to/langgraph-workspace-agent",
+        "ALLOWED_PATHS": "/Users/username/git",
+        "WORKSPACE_AGENT_CONFIG_PATH": "/path/to/langgraph-workspace-agent/config.yaml"
+      }
+    }
+  }
+}
+```
+
+When connected, your desktop AI client can invoke sandboxed test runners, LaTeX compilers, and structured search tools over standard I/O (`stdio`).
+
+---
 
 ## The Lifecycle of a Task
 

@@ -1,5 +1,6 @@
 import concurrent.futures
 import re
+from typing import Any
 
 from langchain_core.messages import (
     AIMessage,
@@ -25,6 +26,14 @@ from src.workspace_agent.tools.github import cleanup_local_branch
 
 from .execution import _build_fallback_chain
 
+__all__ = [
+    "parse_intent_node",
+    "conversational_reply_node",
+    "clarification_node",
+    "cleanup_workflow_node",
+    "human_node",
+]
+
 # ==========================================
 # Module Configuration Constants
 # ==========================================
@@ -38,165 +47,14 @@ MAX_FAST_PATH_LEN = 15
 # ==========================================
 
 
-def _extract_tier_command(instruction: str) -> tuple[str, bool, bool, str | None]:
-    """
-    Detects tier and model override commands in a user instruction.
-    Supports /use:standard, /use:frontier, and /use:<model_alias>.
-    Returns (cleaned_instruction, has_frontier, has_standard, requested_model).
-    """
-    if not instruction:
-        return "", False, False, None
-
-    has_frontier = False
-    has_standard = False
-    requested_model = None
-
-    # 1. Look for specific tier overrides (using whitespace boundaries to prevent path collisions)
-    if re.search(r"(?i)(?:^|\s)/use:frontier(?=\s|$)", instruction):
-        has_frontier = True
-    elif re.search(r"(?i)(?:^|\s)/use:standard(?=\s|$)", instruction):
-        has_standard = True
-
-    # 2. Look for specific model aliases
-    # Matches /use: followed by word characters, but ignores standard/frontier
-    model_match = re.search(
-        r"(?i)(?:^|\s)/use:(?!standard\b|frontier\b)([a-zA-Z0-9_]+)(?=\s|$)", instruction
-    )
-    if model_match:
-        requested_model = model_match.group(1)
-
-    # If no commands were found, return early
-    if not (has_frontier or has_standard or requested_model):
-        return instruction, False, False, None
-
-    # 3. Clean the instruction safely by removing the command token and any extra spaces it leaves
-    clean_instruction = re.sub(
-        r"(?i)(?:^|\s)/use:(frontier|standard|[a-zA-Z0-9_]+)(?=\s|$)", "", instruction
-    ).strip()
-
-    clean_instruction = re.sub(r"[ \t]+", " ", clean_instruction)
-
-    return clean_instruction, has_frontier, has_standard, requested_model
-
-
-def _invoke_escalating_router(payload: dict, initial_tier: int, config: RunnableConfig = None):
-    """Helper to manage the timeout and tier-escalation logic for the unified router chain."""
-    config = config or {}
-    decision = None
-    error_log = []
-    current_tier = initial_tier
-
-    while current_tier <= TIER_FRONTIER:
-        router_chain = get_intent_router(requested_tier=current_tier)
-
-        # If the requested tier is not configured (e.g., no API keys), skip to the next
-        if not router_chain:
-            error_log.append(f"Tier {current_tier} skipped: Not configured or missing API keys.")
-            current_tier += 1
-            continue
-
-        def _invoke_router(chain=router_chain):
-            # Create a localized configuration that strips out the async Langfuse callbacks.
-            # This completely decouples the background thread from global telemetry locks,
-            # preventing cold-boot cascading deadlocks.
-            safe_config = config.copy()
-            safe_config["callbacks"] = []
-
-            # Pass the generic dictionary payload natively into the router chain
-            return chain.invoke(payload, config=safe_config)
-
-        # Isolate the blocking HTTP call in a background thread manually.
-        # a 'with' block is not used so we can execute a non-blocking
-        # shutdown if the API takes too long, saving the server from freezing.
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            future = executor.submit(_invoke_router)
-            # Pull the safe, extended timeout from config
-            decision = future.result(timeout=settings.agent.router_timeout_seconds)
-
-            # Clean up cleanly on success
-            executor.shutdown(wait=False, cancel_futures=True)
-            break  # Successful classification, exit the escalation loop
-
-        except concurrent.futures.TimeoutError:
-            timeout_sec = settings.agent.router_timeout_seconds
-            error_log.append(f"Tier {current_tier} error: Thread timed out after {timeout_sec}s.")
-            executor.shutdown(wait=False, cancel_futures=True)
-            current_tier += 1
-
-        except Exception as e:
-            error_log.append(f"Tier {current_tier} error: {str(e)}")
-            executor.shutdown(wait=False, cancel_futures=True)
-            current_tier += 1
-
-    latest_error = "\n".join(error_log) if error_log else None
-
-    return decision, latest_error
-
-
-def _get_latest_human_instruction(messages: list, fallback: str) -> str:
-    """Extracts the absolute latest user feedback, explicitly ignoring system traps."""
-    latest_human_msg = next(
-        (
-            m.content
-            for m in reversed(messages)
-            if m.type == "human"
-            and not str(m.content).startswith("SYSTEM REJECTION")
-            and not str(m.content).startswith("SYSTEM ERROR")
-        ),
-        "",
-    )
-    return latest_human_msg if latest_human_msg else fallback
-
-
-def _check_conversational_fast_path(clean_instruction: str) -> bool:
-    """
-    Fast-path for simple conversational declines/acknowledgments to prevent
-    router confusion (e.g., when the user says "No" to an AI-generated
-    question that wasn't a formal tool interrupt).
-    """
-    quick_responses = {
-        "no",
-        "nope",
-        "nah",
-        "stop",
-        "done",
-        "thanks",
-        "thank you",
-        "no thanks",
-        "goodbye",
-        "bye",
-        "ok",
-        "okay",
-    }
-    check_str = re.sub(r"[^a-zA-Z\s]", "", clean_instruction.strip()).strip().lower()
-    return len(check_str) < MAX_FAST_PATH_LEN and check_str in quick_responses
-
-
-def _build_recent_context(messages: list) -> str:
-    """Builds a truncated sliding window of the conversation history."""
-    if not messages or len(messages) <= 1:
-        return ""
-
-    recent_msgs = messages[-4:]
-    history_lines = []
-
-    for m in recent_msgs:
-        content_str = str(m.content)
-        if len(content_str) > MAX_CONTEXT_LENGTH:
-            content_str = content_str[:MAX_CONTEXT_LENGTH] + "... [TRUNCATED FOR ROUTING]"
-        speaker = "User" if m.type == "human" else "Agent"
-        history_lines.append(f"{speaker}: {content_str}")
-
-    context_str = "\n".join(history_lines)
-    return f"\nRecent Conversation Context:\n{context_str}\n"
-
-
-def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
-    """
-    Tier 1 Routing Node with Escalation.
+def parse_intent_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+    """Tier 1 Routing Node with Escalation.
     Analyzes the user's initial instruction and forces a structured JSON decision.
     Uses limited recent message history to handle conversational follow-ups naturally.
+
+    Expected State Transitions: Updates intent categorizations, workspace contexts,
+    router confidence, and tracks tier overrides.
+    Exceptions: Returns an aborted state if all router escalation attempts timeout or fail.
     """
     config = config or {}
 
@@ -296,7 +154,171 @@ def parse_intent_node(state: AgentState, config: RunnableConfig = None) -> dict:
     return state_update
 
 
-def conversational_reply_node(state: AgentState, config: RunnableConfig = None) -> dict:
+def _get_latest_human_instruction(messages: list, fallback: str) -> str:
+    """Extracts the absolute latest user feedback, explicitly ignoring system traps.
+    Handles edge cases where recent messages contain SYSTEM REJECTION or ERROR prefixes.
+    """
+    latest_human_msg = next(
+        (
+            m.content
+            for m in reversed(messages)
+            if m.type == "human"
+            and not str(m.content).startswith("SYSTEM REJECTION")
+            and not str(m.content).startswith("SYSTEM ERROR")
+        ),
+        "",
+    )
+    return latest_human_msg if latest_human_msg else fallback
+
+
+def _extract_tier_command(instruction: str) -> tuple[str, bool, bool, str | None]:
+    """Detects tier and model override commands in a user instruction.
+    Parses boundaries securely to prevent path collisions and strips the commands natively.
+    """
+    if not instruction:
+        return "", False, False, None
+
+    has_frontier = False
+    has_standard = False
+    requested_model = None
+
+    # 1. Look for specific tier overrides (using whitespace boundaries to prevent path collisions)
+    if re.search(r"(?i)(?:^|\s)/use:frontier(?=\s|$)", instruction):
+        has_frontier = True
+    elif re.search(r"(?i)(?:^|\s)/use:standard(?=\s|$)", instruction):
+        has_standard = True
+
+    # 2. Look for specific model aliases
+    # Matches /use: followed by word characters, but ignores standard/frontier
+    model_match = re.search(
+        r"(?i)(?:^|\s)/use:(?!standard\b|frontier\b)([a-zA-Z0-9_]+)(?=\s|$)", instruction
+    )
+    if model_match:
+        requested_model = model_match.group(1)
+
+    # If no commands were found, return early
+    if not (has_frontier or has_standard or requested_model):
+        return instruction, False, False, None
+
+    # 3. Clean the instruction safely by removing the command token and any extra spaces it leaves
+    clean_instruction = re.sub(
+        r"(?i)(?:^|\s)/use:(frontier|standard|[a-zA-Z0-9_]+)(?=\s|$)", "", instruction
+    ).strip()
+
+    clean_instruction = re.sub(r"[ \t]+", " ", clean_instruction)
+
+    return clean_instruction, has_frontier, has_standard, requested_model
+
+
+def _check_conversational_fast_path(clean_instruction: str) -> bool:
+    """Fast-path for simple conversational declines/acknowledgments to prevent router confusion.
+    Avoids wasting LLM cycles when a user provides common single-word responses.
+    """
+    quick_responses = {
+        "no",
+        "nope",
+        "nah",
+        "stop",
+        "done",
+        "thanks",
+        "thank you",
+        "no thanks",
+        "goodbye",
+        "bye",
+        "ok",
+        "okay",
+    }
+    check_str = re.sub(r"[^a-zA-Z\s]", "", clean_instruction.strip()).strip().lower()
+    return len(check_str) < MAX_FAST_PATH_LEN and check_str in quick_responses
+
+
+def _build_recent_context(messages: list) -> str:
+    """Builds a truncated sliding window of the conversation history.
+    Enforces a strict MAX_CONTEXT_LENGTH per message to prevent payload bloat.
+    """
+    if not messages or len(messages) <= 1:
+        return ""
+
+    recent_msgs = messages[-4:]
+    history_lines = []
+
+    for m in recent_msgs:
+        content_str = str(m.content)
+        if len(content_str) > MAX_CONTEXT_LENGTH:
+            content_str = content_str[:MAX_CONTEXT_LENGTH] + "... [TRUNCATED FOR ROUTING]"
+        speaker = "User" if m.type == "human" else "Agent"
+        history_lines.append(f"{speaker}: {content_str}")
+
+    context_str = "\n".join(history_lines)
+    return f"\nRecent Conversation Context:\n{context_str}\n"
+
+
+def _invoke_escalating_router(
+    payload: dict, initial_tier: int, config: RunnableConfig | None = None
+) -> tuple[Any, str | None]:
+    """Helper to manage the timeout and tier-escalation logic for the unified router chain.
+    Isolates the blocking HTTP call in a background thread to safely escape hanging API responses.
+    """
+    config = config or {}
+    decision = None
+    error_log = []
+    current_tier = initial_tier
+
+    while current_tier <= TIER_FRONTIER:
+        router_chain = get_intent_router(requested_tier=current_tier)
+
+        # If the requested tier is not configured (e.g., no API keys), skip to the next
+        if not router_chain:
+            error_log.append(f"Tier {current_tier} skipped: Not configured or missing API keys.")
+            current_tier += 1
+            continue
+
+        def _invoke_router(chain=router_chain):
+            # Create a localized configuration that strips out the async Langfuse callbacks.
+            # This completely decouples the background thread from global telemetry locks,
+            # preventing cold-boot cascading deadlocks.
+            safe_config = config.copy()
+            safe_config["callbacks"] = []
+
+            # Pass the generic dictionary payload natively into the router chain
+            return chain.invoke(payload, config=safe_config)
+
+        # Isolate the blocking HTTP call in a background thread manually.
+        # a 'with' block is not used so we can execute a non-blocking
+        # shutdown if the API takes too long, saving the server from freezing.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(_invoke_router)
+            # Pull the safe, extended timeout from config
+            decision = future.result(timeout=settings.agent.router_timeout_seconds)
+
+            # Clean up cleanly on success
+            executor.shutdown(wait=False, cancel_futures=True)
+            break  # Successful classification, exit the escalation loop
+
+        except concurrent.futures.TimeoutError:
+            timeout_sec = settings.agent.router_timeout_seconds
+            error_log.append(f"Tier {current_tier} error: Thread timed out after {timeout_sec}s.")
+            executor.shutdown(wait=False, cancel_futures=True)
+            current_tier += 1
+
+        except Exception as e:
+            error_log.append(f"Tier {current_tier} error: {str(e)}")
+            executor.shutdown(wait=False, cancel_futures=True)
+            current_tier += 1
+
+    latest_error = "\n".join(error_log) if error_log else None
+
+    return decision, latest_error
+
+
+def conversational_reply_node(state: AgentState, config: RunnableConfig | None = None) -> dict:
+    """Handles conversational responses via a fallback sequence when routing tools are bypassed.
+
+    Expected State Transitions: Appends the agent's AI response message, releases the busy lock,
+    and increments the base execution counter.
+    Exceptions: Aborts state transition if fetching the execution sequence fails.
+    """
     config = config or {}
 
     try:
@@ -328,9 +350,11 @@ def conversational_reply_node(state: AgentState, config: RunnableConfig = None) 
 
 
 def clarification_node(state: AgentState) -> dict:
-    """
-    Human-in-the-Loop Node.
+    """Human-in-the-Loop Node.
     Handles dynamic LLM questions, file disambiguation, and workspace routing errors.
+
+    Expected State Transitions: Generates an AI message requesting clarification and appends
+    it to the state without clearing local variables.
     """
     question = state.get("clarification_question")
     options = state.get("disambiguation_options")
@@ -366,10 +390,12 @@ def clarification_node(state: AgentState) -> dict:
 
 
 def cleanup_workflow_node(state: AgentState) -> dict:
-    """
-    Final exit ramp for aborted tasks in the parent graph.
-    Resets the busy lock, clears dangling conversational state,
-    and handles Git repository hygiene.
+    """Final exit ramp for aborted tasks in the parent graph.
+    Resets the busy lock, clears dangling conversational state, and handles Git repository hygiene.
+
+    Expected State Transitions: Filters out intermediate tool and rejection messages, resets
+    task-specific variables (like retry counts and workflow models), and releases workflow locks.
+    Exceptions: Catches and embeds local Git branch cleanup failures into the AI message.
     """
     last_message = state["messages"][-1] if state.get("messages") else None
 
@@ -429,8 +455,9 @@ def cleanup_workflow_node(state: AgentState) -> dict:
 
 
 def human_node(state: AgentState) -> dict:
-    """
-    Dummy breakpoint node for human-in-the-loop.
+    """Dummy breakpoint node for human-in-the-loop.
     The graph pauses before this node to wait for user input via Telegram.
+
+    Expected State Transitions: Returns an empty dictionary to pause graph progression.
     """
     return {}
