@@ -1,10 +1,6 @@
-[tool.poetry]
-name = "langgraph-workspace-agent"
-version = "0.5.0"
-description = "FastAPI-based webhook gateway and orchestrator for an autonomous LangGraph workspace agent"
-authors = ["Vernon Chuo Chian Khye"]
-readme = "README.md"
-packages = [{include = "workspace_agent", from = "src"}]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "langgraph-workspace-agent"
@@ -36,17 +32,41 @@ dependencies = [
     "GitPython>=3.1.50,<4.0.0",
     "docker>=7.1.0,<8.0.0",
     "ollama>=0.6.2,<1.0.0",
-    "pypdf>=5.0.0,<6.0.0"
+    "pypdf>=5.0.0,<6.0.0",
+    "psutil>=5.9.0"
 ]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.28.0,<2.0.0"]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.1.0,<10.0.0",
+    "pytest-mock>=3.15.1,<4.0.0",
+    "ruff==0.15.17"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workspace_agent"]
+
+[tool.pytest.ini_options]
+# treat root of repo as a source directory
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "--ignore=tests/evals/fixtures"
+filterwarnings = [
+    # suppress LangChain's allowed_objects warning
+    "ignore:.*The default value of `allowed_objects` will change in a future version.*",
+    # suppress environment variable path warning if it originates from the git package
+    "ignore:.*The use of environment variables in paths is deprecated.*::git.*",
+    # suppress FastAPI/Starlette internal deprecation noise regarding the TestClient
+    "ignore:.*Using `httpx` with `starlette.testclient` is deprecated.*:DeprecationWarning",
+    "ignore:.*Using `httpx` with `starlette.testclient` is deprecated.*:UserWarning"
+]
+
 [tool.ruff]
 target-version = "py311"
-
 line-length = 100
-
 # directory exclusions
 exclude = [
     ".git",
@@ -54,6 +74,11 @@ exclude = [
     "__pycache__",
     ".chroma",
 ]
+
+[tool.ruff.format]
+# standardize on double quotes and consistent indentation
+quote-style = "double"
+indent-style = "space"
 
 [tool.ruff.lint]
 # rulesets to enable
@@ -79,38 +104,14 @@ ignore = [
 # ensure imports are sorted and grouped logically
 known-first-party = ["src"]
 
-[tool.ruff.lint.pylint]
-# Global override to allow up to 8 arguments per function definition
-max-args = 8
-
 [tool.ruff.lint.pydocstyle]
 # Enforce Google-style docstring structures for standard LLM parsing
 convention = "google"
 
-[tool.ruff.format]
-# standardize on double quotes and consistent indentation
-quote-style = "double"
-indent-style = "space"
+[tool.ruff.lint.pylint]
+# Global override to allow up to 8 arguments per function definition
+max-args = 8
 
 [tool.ruff.lint.per-file-ignores]
 # ignore "magic values" (PLR2004) and docstring limits in the tests directory
 "tests/**/*" = ["PLR2004", "D"]
-
-[tool.pytest.ini_options]
-# treat root of repo as a source directory
-pythonpath = ["."]
-testpaths = ["tests"]
-addopts = "--ignore=tests/evals/fixtures"
-filterwarnings = [
-    # suppress LangChain's allowed_objects warning
-    "ignore:.*The default value of `allowed_objects` will change in a future version.*",
-    # suppress environment variable path warning if it originates from the git package
-    "ignore:.*The use of environment variables in paths is deprecated.*::git.*",
-    # suppress FastAPI/Starlette internal deprecation noise regarding the TestClient
-    "ignore:.*Using `httpx` with `starlette.testclient` is deprecated.*:DeprecationWarning",
-    "ignore:.*Using `httpx` with `starlette.testclient` is deprecated.*:UserWarning"
-]
-
-[tool.poetry.scripts]
-# allows booting the local dev server via: `poetry run dev`
-dev = "uvicorn src.workspace_agent.main:app --reload --host 127.0.0.1 --port 8000"
