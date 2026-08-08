@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "langgraph-workspace-agent"
-version = "0.4.0"
+version = "0.5.0"
 description = "FastAPI-based webhook gateway and orchestrator for an autonomous LangGraph workspace agent"
 authors = ["Vernon Chuo Chian Khye"]
 readme = "README.md"
@@ -8,7 +8,7 @@ packages = [{include = "workspace_agent", from = "src"}]
 
 [project]
 name = "langgraph-workspace-agent"
-version = "0.4.0"
+version = "0.5.0"
 description = "FastAPI-based webhook gateway and orchestrator for an autonomous LangGraph workspace agent"
 authors = [
     { name = "Vernon Chuo Chian Khye", email = "vchuo93@gmail.com" }
